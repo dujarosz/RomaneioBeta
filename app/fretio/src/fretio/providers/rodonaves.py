@@ -331,52 +331,39 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         )
 
     async def _perform_ajax_login(self, page: Any) -> None:
-        logger.info(f"[{self.nome}] Iniciando login...")
-        for _jquery_attempt in range(2):
-            try:
-                await page.wait_for_function(
-                    "typeof jQuery !== 'undefined' && typeof jQuery.ajax === 'function'",
-                    timeout=10000,
-                )
-                break
-            except Exception:
-                if _jquery_attempt == 0:
-                    logger.warning(f"[{self.nome}] jQuery não carregou, recarregando página...")
-                    try:
-                        await page.reload(wait_until="domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass
-                    continue
-                raise RuntimeError(f"Login Rodonaves falhou — jQuery não carregou (URL: {page.url})")
-
+        logger.info(f"[{self.nome}] Iniciando login via UI...")
         login_doc = self._digits(self.usuario) or self._digits(self.dominio) or self.cnpj_pagador
-        logger.info(f"[{self.nome}] Login AJAX com doc={login_doc[:4]}***{login_doc[-2:]}")
+        logger.info(f"[{self.nome}] Preenchendo login com doc={login_doc[:4]}***{login_doc[-2:]}")
 
-        result = await page.evaluate("""({cpfcnp, password}) => {
-            return new Promise((resolve) => {
-                const root = typeof rootPath !== 'undefined' ? rootPath : '';
-                jQuery.ajax({
-                    type: "POST",
-                    url: root + "/CustomerAccount/LogIn",
-                    dataType: "json",
-                    contentType: "application/json; charset=utf-8",
-                    data: JSON.stringify({ Cpfcnp: cpfcnp, Password: password }),
-                    success: function(r) { resolve(r); },
-                    error: function(xhr, status, err) {
-                        resolve({ Success: false, ErrorMessage: err || status || 'AJAX error' });
-                    }
-                });
-            });
-        }""", {"cpfcnp": login_doc, "password": self.senha})
-
-        if not result or not result.get("Success"):
-            self._mark_login_failed()
-            error_msg = (
-                (result or {}).get("WarningMessage")
-                or (result or {}).get("ErrorMessage")
-                or "resposta inesperada do servidor"
-            )
-            raise RuntimeError(f"Login Rodonaves falhou — {error_msg}")
+        await page.locator('#cpfcnp').fill(login_doc)
+        await page.locator('#passwordToLogin').fill(self.senha)
+        
+        # O portal RTE agora usa crypto-jwe.js, então clicamos no botão
+        # para que o script nativo faça a criptografia e submissão correta.
+        await page.locator('#loginSubmit').click()
+        
+        try:
+            # Aguarda um tempo para ver se aparece mensagem de erro ou se redireciona
+            await page.wait_for_timeout(3000)
+            
+            # Se não redirecionou e continua na tela, checamos mensagens de erro
+            erro_msg = await page.evaluate('''() => {
+                const toast = document.querySelector('.toast-message');
+                if (toast && toast.innerText) return toast.innerText;
+                const errInput = document.querySelector('#errorMessage');
+                if (errInput && errInput.value) return errInput.value;
+                const fieldErr = document.querySelector('.field-validation-error');
+                if (fieldErr && fieldErr.innerText) return fieldErr.innerText;
+                return '';
+            }''')
+            if erro_msg:
+                self._mark_login_failed()
+                raise RuntimeError(f"Login Rodonaves falhou — {erro_msg}")
+        except Exception as e:
+            if "Login Rodonaves falhou" in str(e):
+                raise
+            # Se der erro de contexto destruído, significa que navegou com sucesso!
+            pass
 
         self._set_login_status("login_ok", True)
 

@@ -189,7 +189,7 @@ class EucaturProvider(ProviderBase):
             ) from exc
         await self._page.wait_for_timeout(800)
 
-        has_form = await self._page.locator('input[name=f2]').count()
+        has_form = await self._page.locator('input').count()
         if has_form == 0:
             # Sessão pode ter expirado — tentar re-login
             logger.warning(f"[{self.nome}] Formulário não encontrado, tentando re-login...")
@@ -202,7 +202,7 @@ class EucaturProvider(ProviderBase):
                     "Eucatur: timeout de rede/portal ao reabrir tela SSW de cotação (ssw1608)"
                 ) from exc
             await self._page.wait_for_timeout(800)
-            has_form = await self._page.locator('input[name=f2]').count()
+            has_form = await self._page.locator('input').count()
             if has_form == 0:
                 raise Exception("Formulário de cotação não carregou mesmo após re-login")
 
@@ -215,145 +215,103 @@ class EucaturProvider(ProviderBase):
                                 cubagens: Optional[list[dict]] = None,
                                 cnpj_pagador: str = "", tipo_frete: str = "1"):
         """Preenche o formulário de cotação SSW via JavaScript."""
+        self._passo_atual = "preenchendo_formulario"
         page = self._page
         cnpj_pagador = (cnpj_pagador or self.cnpj_pagador).replace('.', '').replace('/', '').replace('-', '').strip()
         if len(cnpj_pagador) != 14:
             raise ValueError("cnpj_pagador é obrigatório para cotação Eucatur")
 
-        self._passo_atual = "preencher_destinatario"
-
-        # CNPJ pagador + trigger lookup
-        await page.evaluate(f'''() => {{
-            const f2 = document.querySelector('input[name=f2]');
-            f2.value = '{cnpj_pagador}';
-            if (typeof pag === 'function') pag('{cnpj_pagador}');
-        }}''')
-        await page.wait_for_timeout(1000)
-
-        self._passo_atual = "preencher_origem_destino"
-
-        # CEP origem + trigger lookup
-        cep_orig = origem.replace('-', '').strip()
-        await page.evaluate(f'''() => {{
-            const f6 = document.querySelector('input[name=f6]');
-            f6.value = '{cep_orig}';
-            if (typeof ce2 === 'function') ce2('{cep_orig}');
-        }}''')
-        await page.wait_for_timeout(1000)
-
-        # CEP destino + trigger lookup
-        cep_dest = destino.replace('-', '').strip()
-        await page.evaluate(f'''() => {{
-            const f8 = document.querySelector('input[name=f8]');
-            f8.value = '{cep_dest}';
-            if (typeof cep === 'function') cep('{cep_dest}');
-        }}''')
-        await page.wait_for_timeout(1000)
-
-        # Frete CIF/FOB, Coletar S, Contribuinte S, Entrega difícil N
-        await page.evaluate('''(tipoFrete) => {
-            const f9 = document.querySelector('input[name=f9]');
-            f9.value = tipoFrete;
-            if (typeof f_c === 'function') f_c(tipoFrete);
-            document.querySelector('input[name=f10]').value = 'S';
-            document.querySelector('input[name=f13]').value = 'S';
-            document.querySelector('input[name=f14]').value = 'N';
-        }''', tipo_frete)
-
-        # Campos explicitados para esta tela:
-        # - Mercadoria: f4 (valor fixo 001)
-        # - CNPJ remetente: cgc_rem
-        # - CNPJ destinatário: f12
         cnpj_rem = cnpj_remetente.replace('.', '').replace('/', '').replace('-', '').strip()
         cnpj_dest = cnpj_destinatario.replace('.', '').replace('/', '').replace('-', '').strip()
-        await page.evaluate(
-            """({ mercadoria, cnpjRem, cnpjDest }) => {
-                const setInputValue = (name, value) => {
-                    const el = document.querySelector(`input[name="${name}"]`);
-                    if (!el) return false;
-                    el.value = value;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                    return true;
-                };
-                setInputValue('f4', mercadoria);
-                if (cnpjRem) setInputValue('cgc_rem', cnpjRem);
-                if (cnpjDest) setInputValue('f12', cnpjDest);
-            }""",
-            {
-                "mercadoria": "001",
-                "cnpjRem": cnpj_rem,
-                "cnpjDest": cnpj_dest,
-            },
-        )
-
-        # Valor NF (f15) - preenchimento robusto.
+        cep_orig = origem.replace('-', '').strip()
+        cep_dest = destino.replace('-', '').strip()
         valor_fmt = f"{valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        await page.evaluate(
-            """(valorNf) => {
-                const el = document.querySelector("input[name='f15']");
-                if (!el) return;
-                el.value = valorNf;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
-            }""",
-            valor_fmt,
-        )
-
-        self._passo_atual = "preencher_volumes"
-
-        # Quantidade volumes
-        await page.evaluate(f'() => {{ document.querySelector("input[name=f16]").value = "{volumes}"; }}')
-
-        self._passo_atual = "preencher_peso_valor"
-
-        # Peso real do romaneio
         peso_fmt = f"{peso:.3f}".replace('.', ',')
-        await page.evaluate(f'() => {{ document.querySelector("input[name=f18]").value = "{peso_fmt}"; }}')
+        cubagem_fmt = f"{cubagem_m3:.4f}".replace('.', ',') if cubagem_m3 > 0 else ""
 
-        # Quantidade de pares (f17) deve ser ignorada.
-        await page.evaluate("""() => {
-            const f17 = document.querySelector('input[name=f17]');
-            if (!f17) return;
-            f17.value = '';
-            f17.dispatchEvent(new Event('input', { bubbles: true }));
-            f17.dispatchEvent(new Event('change', { bubbles: true }));
-            f17.dispatchEvent(new Event('blur', { bubbles: true }));
-        }""")
+        self._passo_atual = "preenchendo_campos_dinamicos"
 
-        self._passo_atual = "preencher_cubagem"
-
-        # Preencher campo de cubagem (m³) explicitamente.
-        if cubagem_m3 > 0:
-            cubagem_fmt = f"{cubagem_m3:.4f}".replace('.', ',')
-            await page.evaluate(f'''() => {{
-                const names = ['f20', 'cubagem', 'cubagem_m3', 'f19'];
+        # Injetamos uma função inteligente que encontra os inputs por Evento (onchange/onblur), Label (div.texto) ou nome (fallback)
+        await page.evaluate(f'''() => {{
+            const setSSWField = (labelText, val, fallbackNames, callFuncName, rawCall) => {{
                 let el = null;
-                for (const name of names) {{
-                    el = document.querySelector('input[name=' + name + ']');
-                    if (el) break;
+                const inputs = Array.from(document.querySelectorAll('input, select'));
+                
+                // Busca por nome de função (onblur/onchange)
+                if (callFuncName) {{
+                    el = inputs.find(i => {{
+                        const ob = i.getAttribute('onblur') || '';
+                        const oc = i.getAttribute('onchange') || '';
+                        return ob.includes(callFuncName + '(') || oc.includes(callFuncName + '(');
+                    }});
                 }}
-                if (!el) {{
-                    const inputs = Array.from(document.querySelectorAll('input'));
-                    for (const input of inputs) {{
-                        const rowText =
-                            (input.closest('tr')?.innerText || '') + ' ' +
-                            (input.parentElement?.innerText || '');
-                        if (/cubagem/i.test(rowText)) {{
-                            el = input;
-                            break;
+                
+                // Busca por Label visual
+                if (!el && labelText) {{
+                    const divs = Array.from(document.querySelectorAll('div.texto'));
+                    const div = divs.find(d => d.innerText.trim().toUpperCase().includes(labelText.toUpperCase()));
+                    if (div) {{
+                        let next = div.nextElementSibling;
+                        while(next && next.tagName !== 'INPUT' && next.tagName !== 'SELECT') {{
+                            next = next.nextElementSibling;
                         }}
+                        if (next && (next.tagName === 'INPUT' || next.tagName === 'SELECT')) el = next;
                     }}
                 }}
+                
+                // Busca por Fallback
+                if (!el && fallbackNames) {{
+                    for(let n of fallbackNames) {{
+                        el = document.querySelector(`[name="${{n}}"]`);
+                        if (el) break;
+                    }}
+                }}
+
                 if (el) {{
-                    el.value = '{cubagem_fmt}';
+                    el.value = val;
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                 }}
-            }}''')
+                
+                if (rawCall) {{
+                    try {{ eval(rawCall); }} catch(e) {{}}
+                }}
+            }};
+
+            // Preenche os campos cruciais com essa heurística imune à adição de novos campos!
+            setSSWField('Pagador', '{cnpj_pagador}', ['cgc_pag', 'f2', 'f3'], 'pag', "if(typeof pag==='function') pag('{cnpj_pagador}');");
+            setSSWField('CEP Orig', '{cep_orig}', ['cep_origem', 'f6', 'f7'], 'ce2', "if(typeof ce2==='function') ce2('{cep_orig}');");
+            setSSWField('CEP Dest', '{cep_dest}', ['cep_destino', 'f8', 'f9'], 'cep', "if(typeof cep==='function') cep('{cep_dest}');");
+            
+            // CIF/FOB (1 ou 2)
+            setSSWField('Frete', '{tipo_frete}', ['tp_frete', 'f9', 'f10'], 'f_c', "if(typeof f_c==='function') f_c('{tipo_frete}');");
+            
+            // Flags
+            setSSWField('Coletar', 'S', ['coletar', 'f10', 'f11'], null, null);
+            setSSWField('Contribuinte', 'S', ['contribuinte', 'f13', 'f14'], null, null);
+            setSSWField('Entrega Dif', 'N', ['ent_dif', 'f14', 'f15'], null, null);
+            setSSWField('Mercadoria', '001', ['tp_merc', 'f4', 'f5'], null, null);
+            
+            // Remetente (cgc_rem)
+            setSSWField('Remetente', '{cnpj_rem}', ['cgc_rem'], null, "if(typeof cgc==='function') cgc('rem');");
+            
+            // Destinatário
+            if ('{cnpj_dest}'.length === 14) {{
+                setSSWField('Destinatário', '{cnpj_dest}', ['cgc_dest', 'f12', 'f13'], null, "if(typeof cgc==='function') cgc('des');");
+            }}
+
+            // Valores de carga
+            setSSWField('Valor NF', '{valor_fmt}', ['vlr_merc', 'f15', 'f16'], null, null); // Usar 'Valor NF' evita achar 'Valor Adicional'
+            setSSWField('Volumes', '{volumes}', ['qtde_vol', 'f16', 'f17'], null, null);
+            setSSWField('Peso', '{peso_fmt}', ['peso', 'f18', 'f19'], null, null);
+            setSSWField('Pares', '', ['qtde_pares', 'f17', 'f18'], null, null); // limpa pares
+
+            if ('{cubagem_fmt}') {{
+                setSSWField('M3', '{cubagem_fmt}', ['cubagem', 'cubagem_m3', 'f20', 'f21'], null, null);
+            }}
+        }}''')
+        await page.wait_for_timeout(500)
 
         # Preencher cubagem por volume (campos cuba1..cuba11) somente quando couber.
         # Acima disso o SSW aceita a cubagem total já informada no campo de m³.
