@@ -335,36 +335,126 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         login_doc = self._digits(self.usuario) or self._digits(self.dominio) or self.cnpj_pagador
         logger.info(f"[{self.nome}] Preenchendo login com doc={login_doc[:4]}***{login_doc[-2:]}")
 
-        await page.locator('#cpfcnp').fill(login_doc)
-        await page.locator('#passwordToLogin').fill(self.senha)
-        
-        # O portal RTE agora usa crypto-jwe.js, então clicamos no botão
-        # para que o script nativo faça a criptografia e submissão correta.
-        await page.locator('#loginSubmit').click()
-        
+        # Se o modal de login não estiver aberto, tenta abrir
         try:
-            # Aguarda um tempo para ver se aparece mensagem de erro ou se redireciona
-            await page.wait_for_timeout(3000)
-            
-            # Se não redirecionou e continua na tela, checamos mensagens de erro
-            erro_msg = await page.evaluate('''() => {
-                const toast = document.querySelector('.toast-message');
-                if (toast && toast.innerText) return toast.innerText;
-                const errInput = document.querySelector('#errorMessage');
-                if (errInput && errInput.value) return errInput.value;
-                const fieldErr = document.querySelector('.field-validation-error');
-                if (fieldErr && fieldErr.innerText) return fieldErr.innerText;
-                return '';
-            }''')
-            if erro_msg:
-                self._mark_login_failed()
-                raise RuntimeError(f"Login Rodonaves falhou — {erro_msg}")
+            cpfcnp_locator = page.locator('#cpfcnp')
+            if not await cpfcnp_locator.is_visible(timeout=1000):
+                for btn_sel in ("a[href*='showLogin']", "a[data-target='#loginModal']", "#btn-login", "a:has-text('Entrar')", "button:has-text('Entrar')"):
+                    try:
+                        el = page.locator(btn_sel).first
+                        if await el.is_visible(timeout=500):
+                            await el.click()
+                            await page.wait_for_timeout(500)
+                            break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Aguarda campo de login
+        cpfcnp_el = page.locator('#cpfcnp')
+        await cpfcnp_el.wait_for(state="visible", timeout=10000)
+        await cpfcnp_el.fill(login_doc)
+
+        pwd_el = page.locator('#passwordToLogin')
+        await pwd_el.fill(self.senha)
+
+        # Atualiza bindings do formulário via JS
+        await page.evaluate("""({doc, pwd}) => {
+            const elDoc = document.getElementById('cpfcnp');
+            if (elDoc) {
+                elDoc.value = doc;
+                elDoc.dispatchEvent(new Event('input', {bubbles: true}));
+                elDoc.dispatchEvent(new Event('change', {bubbles: true}));
+                elDoc.dispatchEvent(new Event('blur', {bubbles: true}));
+            }
+            const elPwd = document.getElementById('passwordToLogin');
+            if (elPwd) {
+                elPwd.value = pwd;
+                elPwd.dispatchEvent(new Event('input', {bubbles: true}));
+                elPwd.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+        }""", {"doc": login_doc, "pwd": self.senha})
+
+        # Aceita termos LGPD se houver checkbox
+        try:
+            lgpd = page.locator('#lgpAcceptTerms')
+            if await lgpd.count() > 0 and not await lgpd.is_checked():
+                await lgpd.check(timeout=1000)
+        except Exception:
+            pass
+
+        # Captura a resposta AJAX do login
+        login_response_data: dict[str, Any] = {}
+        async def _check_response(response):
+            try:
+                url_low = response.url.lower()
+                if "customeraccount/log" in url_low or "login" in url_low:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        try:
+                            login_response_data["json"] = await response.json()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        resp_handler = lambda r: asyncio.ensure_future(_check_response(r))
+        page.on("response", resp_handler)
+
+        try:
+            # Clica no botão Entrar para que o script nativo (crypto-jwe.js) processe
+            submit_btn = page.locator('#loginSubmit')
+            await submit_btn.click()
+
+            # Aguarda resposta da API, mensagens de erro ou navegação
+            for _ in range(24):
+                await page.wait_for_timeout(500)
+
+                if "json" in login_response_data:
+                    res = login_response_data["json"]
+                    if isinstance(res, dict):
+                        if res.get("Success") is False:
+                            err = res.get("ErrorMessage") or res.get("WarningMessage") or "Credenciais inválidas ou erro no portal"
+                            self._mark_login_failed()
+                            raise RuntimeError(f"Login Rodonaves falhou — {err}")
+                        elif res.get("Success") is True:
+                            logger.info(f"[{self.nome}] Resposta de login confirmada com sucesso")
+                            break
+
+                erro_msg = await page.evaluate('''() => {
+                    const toast = document.querySelector('.toast-message');
+                    if (toast && toast.innerText && toast.innerText.trim()) return toast.innerText.trim();
+                    const errInput = document.querySelector('#errorMessage');
+                    if (errInput && errInput.value && errInput.value.trim()) return errInput.value.trim();
+                    const fieldErr = document.querySelector('.field-validation-error');
+                    if (fieldErr && fieldErr.innerText && fieldErr.innerText.trim()) return fieldErr.innerText.trim();
+                    const valSummary = document.querySelector('.validation-summary-errors');
+                    if (valSummary && valSummary.innerText && valSummary.innerText.trim()) return valSummary.innerText.trim();
+                    const alertErr = document.querySelector('.alert-danger');
+                    if (alertErr && alertErr.innerText && alertErr.innerText.trim()) return alertErr.innerText.trim();
+                    return '';
+                }''')
+                if erro_msg:
+                    self._mark_login_failed()
+                    raise RuntimeError(f"Login Rodonaves falhou — {erro_msg}")
+
+                modal_visible = await page.evaluate('''() => {
+                    const m = document.getElementById('loginModal');
+                    if (!m) return false;
+                    return m.classList.contains('in') || m.classList.contains('show') || m.style.display === 'block';
+                }''')
+                if not modal_visible and "json" in login_response_data:
+                    break
+                if "quotation" in page.url.lower():
+                    break
         except Exception as e:
             if "Login Rodonaves falhou" in str(e):
                 raise
-            # Se der erro de contexto destruído, significa que navegou com sucesso!
-            pass
+        finally:
+            page.remove_listener("response", resp_handler)
 
+        await page.wait_for_timeout(800)
         self._set_login_status("login_ok", True)
 
     async def _go_to_quotation_after_login(self):
@@ -389,14 +479,14 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
             page = await self._goto_with_lifecycle_guard(
                 quotation_url,
                 stage="navegando_cotacao",
-                wait_until="commit",
-                timeout=12000,
+                wait_until="domcontentloaded",
+                timeout=15000,
                 attempts=1,
             )
         except Exception as exc:
             goto_error = exc
             logger.warning(
-                f"[{self.nome}] goto {quotation_url} não confirmou commit imediatamente: {exc}. "
+                f"[{self.nome}] goto {quotation_url} não completou imediatamente: {exc}. "
                 "Aguardando formulário da cotação na mesma página..."
             )
             page = await self._ensure_live_page_for_navigation(
@@ -410,6 +500,16 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
             success_message="Formulário visível após navegação da cotação",
         ):
             return page
+
+        # Fallback: se o goto direto redirecionou, tenta clicar no menu de cotação
+        try:
+            menu_quotation = page.locator("a[href*='Quotation'], a[href*='quotation'], a:has-text('Cotação'), a:has-text('Cotacao')").first
+            if await menu_quotation.is_visible(timeout=2000):
+                await menu_quotation.click()
+                if await self._wait_for_quotation_form(page, timeout=15000, success_message="Formulário visível após clique no menu"):
+                    return page
+        except Exception:
+            pass
 
         current_url = (getattr(page, "url", "") or "").lower()
         if await self._has_login_prompt(page) or "showlogin" in current_url:

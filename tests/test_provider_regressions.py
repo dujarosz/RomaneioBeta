@@ -881,3 +881,125 @@ def test_trd_goto_timeout_is_treated_as_portal_instability():
 
 def test_coopex_classifies_name_not_resolved_as_temporary_network_error():
     assert CoopexProvider._is_temporary_network_error("net::ERR_NAME_NOT_RESOLVED") is True
+
+
+def test_alfa_navegar_para_cotacao_detects_ready_form_without_navigation():
+    from fretio.providers.alfa import AlfaProvider
+
+    class FakeAlfaPage:
+        def __init__(self):
+            self.url = "https://arearestrita.alfatransportes.com.br/cotacao/"
+            self.gotos = []
+
+        async def evaluate(self, script, *args):
+            return True
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+    async def run_test():
+        provider = AlfaProvider("user", "senha")
+        provider._page = FakeAlfaPage()
+        ok = await provider._navegar_para_cotacao()
+        assert ok is True
+        assert provider._page.gotos == []
+
+    asyncio.run(run_test())
+
+
+def test_alfa_navegar_para_cotacao_direct_url_success():
+    from fretio.providers.alfa import AlfaProvider
+
+    class FakeAlfaPage:
+        def __init__(self):
+            self.url = "https://arearestrita.alfatransportes.com.br/painel/"
+            self.gotos = []
+            self._eval_count = 0
+
+        async def goto(self, url, **kwargs):
+            self.gotos.append(url)
+            self.url = url
+
+        async def evaluate(self, script, *args):
+            self._eval_count += 1
+            # Retorna True a partir da chamada após o primeiro goto
+            return len(self.gotos) >= 1
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        def locator(self, _selector):
+            class FakeLocator:
+                async def is_visible(self, **kwargs):
+                    return False
+            return FakeLocator()
+
+    async def run_test():
+        provider = AlfaProvider("user", "senha")
+        provider._page = FakeAlfaPage()
+        ok = await provider._navegar_para_cotacao()
+        assert ok is True
+        assert len(provider._page.gotos) >= 1
+
+    asyncio.run(run_test())
+
+
+def test_rodonaves_ajax_login_failure_raises_and_marks_status():
+    provider = RodonavesProvider("dom", "user", "senha", "12345678000190")
+
+    class FakeLocator:
+        def __init__(self, name=""):
+            self.name = name
+
+        async def is_visible(self, **kwargs):
+            return True
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def fill(self, _val, **kwargs):
+            return None
+
+        async def click(self, **kwargs):
+            return None
+
+        async def count(self):
+            return 0
+
+        async def is_checked(self):
+            return True
+
+        async def check(self, **kwargs):
+            return None
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://cliente.rte.com.br/?showLogin=true"
+            self.listeners = {}
+
+        def locator(self, selector):
+            return FakeLocator(selector)
+
+        def on(self, event, handler):
+            self.listeners[event] = handler
+
+        def remove_listener(self, event, handler):
+            self.listeners.pop(event, None)
+
+        async def evaluate(self, script, *args):
+            if "errorMessage" in script or "toast-message" in script:
+                return "Usuário ou senha inválidos"
+            return False
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+    async def run_test():
+        page = FakePage()
+        with pytest.raises(RuntimeError, match="Login Rodonaves falhou — Usuário ou senha inválidos"):
+            await provider._perform_ajax_login(page)
+        assert provider.login_status["login_falhou"] is True
+        assert provider.login_status["login_ok"] is False
+
+    asyncio.run(run_test())
+

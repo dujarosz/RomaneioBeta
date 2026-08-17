@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.60 - 2026-08-17
+
+- ALFA: correção do caminho de cotação com navegação resiliente a mudanças de layout/menus e detecção flexível de formulário e botões de submit.
+- RODONAVES: correção do fluxo de autenticação e navegação pós-login com captura de resposta da API de login, aceite LGPD e estabilização de sessão antes de navegar para a cotação.
+
 ## 2.55 - 2026-07-02
 
 - Migração da UI desktop de PySide6 para UI web renderizada em WebView2 via pywebview: front local em `app/web/*` (`index.html`, `app.js`, `app.css`, `format.js`, `pages/*.js`), com `app/web_app.py` expondo a bridge `Api`, `app/web_presenters.py` montando os dados e `app/app_bootstrap.py`/`app/startup.py` cuidando de startup, licença, configuração remota e update.

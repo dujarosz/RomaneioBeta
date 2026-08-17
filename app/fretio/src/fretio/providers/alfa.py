@@ -163,70 +163,107 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
         except OSError:
             pass
 
+    async def _form_is_ready(self, page: Any) -> bool:
+        """Verifica se o formulário de cotação da Alfa está renderizado e pronto."""
+        try:
+            return bool(await page.evaluate("""() => {
+                const selectors = [
+                    '#tipoPagador', 'select[name*="tipoPagador"]', 'select[name*="pagador"]',
+                    '#pesoMercadoria', 'input[name*="pesoMercadoria"]', 'input[name*="peso"]',
+                    '#valorMercadoria', 'input[name*="valorMercadoria"]', 'input[name*="valor"]',
+                    '#cnpjRemetente', 'input[name*="cnpjRemetente"]'
+                ];
+                for (const s of selectors) {
+                    const el = document.querySelector(s);
+                    if (el && (el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0)) {
+                        return true;
+                    }
+                }
+                return false;
+            }"""))
+        except Exception:
+            return False
+
+    async def _wait_for_form(self, page: Any, timeout_ms: int = 10000) -> bool:
+        loops = max(1, timeout_ms // 250)
+        for _ in range(loops):
+            if await self._form_is_ready(page):
+                return True
+            await page.wait_for_timeout(250)
+        return False
+
     async def _navegar_para_cotacao(self) -> bool:
-        """Navega para o formulário de cotação: card 'Painel de Cotações' → botão 'Nova Cotação'."""
+        """Navega para o formulário de cotação: card/menu 'Painel de Cotações' → botão 'Nova Cotação'."""
         page = self._page
         try:
             current = page.url.lower()
             logger.info("[ALFA] _navegar_para_cotacao — URL atual: %s", page.url)
 
-            # Se já está na página com o formulário, não precisa navegar
-            if "cotacao" in current and "login" not in current:
-                try:
-                    await page.wait_for_selector("#tipoPagador", timeout=2000)
-                    logger.info("[ALFA] Já estava na página de cotação com formulário pronto")
-                    return True
-                except Exception:
-                    logger.debug("[ALFA] URL contém 'cotacao' mas #tipoPagador não encontrado")
+            # Se já está na página com o formulário pronto
+            if "login" not in current and await self._form_is_ready(page):
+                logger.info("[ALFA] Já estava na página de cotação com formulário pronto")
+                return True
 
             # Após cotação anterior, pode ter botão "Fazer outra Cotação"
             try:
-                btn_outra = page.locator("a[href='/cotacao/api/']").first
-                if await btn_outra.is_visible(timeout=1500):
+                btn_outra = page.locator("a[href*='/cotacao/api/'], a[href*='cotacao'], button:has-text('outra'), a:has-text('outra'), button:has-text('Nova'), a:has-text('Nova')").first
+                if await btn_outra.is_visible(timeout=1000):
                     await btn_outra.click()
-                    logger.info("[ALFA] Clicou em 'Fazer outra Cotação'")
-                    try:
-                        await page.wait_for_selector("#tipoPagador", timeout=8000)
+                    logger.info("[ALFA] Clicou em botão de nova cotação")
+                    if await self._wait_for_form(page, 5000):
                         return True
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
-            # Tenta navegação direta pela URL da cotação (mais rápido que menu)
-            logger.info("[ALFA] Navegação direta para %s", self.cotacao_api_url)
-            try:
-                await page.goto(self.cotacao_api_url, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(800)
-                try:
-                    await page.wait_for_selector("#tipoPagador", timeout=8000)
-                    logger.info("[ALFA] Formulário encontrado via URL direta")
-                    return True
-                except Exception:
-                    logger.debug("[ALFA] URL direta não encontrou formulário, tentando via menu...")
-            except Exception as e:
-                logger.debug("[ALFA] Navegação direta falhou: %s", e)
+            # Tentativas de navegação direta por URLs conhecidas
+            candidate_urls = [
+                self.cotacao_api_url,
+                self.cotacao_url,
+                f"{self.BASE_URL}/cotacao/api/",
+                f"{self.BASE_URL}/cotacao/",
+                f"{self.BASE_URL}/cotacoes/",
+            ]
+            seen_urls = set()
+            urls_to_try = []
+            for u in candidate_urls:
+                u_clean = str(u or "").strip()
+                if u_clean and u_clean not in seen_urls:
+                    seen_urls.add(u_clean)
+                    urls_to_try.append(u_clean)
 
-            # Fallback: volta à página base e navega via menu de cards
+            for target_url in urls_to_try:
+                try:
+                    logger.info("[ALFA] Tentando navegação direta para %s", target_url)
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+                    await page.wait_for_timeout(800)
+                    if await self._wait_for_form(page, 4000):
+                        logger.info("[ALFA] Formulário pronto via navegação direta (%s)", target_url)
+                        return True
+                except Exception as e:
+                    logger.debug("[ALFA] Navegação direta para %s falhou: %s", target_url, e)
+
+            # Fallback: volta à página base e navega via menu / cards
             await page.goto(self.BASE_URL, wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(1000)
 
-            # Clicar no card "Painel de Cotações" via JS (combina todas as tentativas)
+            # Clicar no card / link / menu "Painel de Cotações" via JS
             card_clicked = await page.evaluate("""() => {
-                // Tenta card com class 'opcoes'
-                const cards = document.querySelectorAll('div.opcoes');
-                for (const c of cards) {
-                    const txt = (c.textContent || '').toLowerCase();
-                    if (txt.includes('painel') && txt.includes('cota')) {
-                        c.click();
+                const isMatch = (txt) => {
+                    const t = (txt || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                    return t.includes('cota') || t.includes('painel de cota') || t.includes('solicitar cota') || t.includes('frete');
+                };
+
+                const directLinks = document.querySelectorAll('a[href*="cotacao"], a[href*="cotac"], a[href*="cota"]');
+                for (const a of directLinks) {
+                    if (a.offsetParent !== null || a.offsetWidth > 0 || a.offsetHeight > 0) {
+                        a.click();
                         return true;
                     }
                 }
-                // Fallback: qualquer link/botão contendo cotação
-                const links = document.querySelectorAll('a, button, div[onclick], div.opcoes');
-                for (const el of links) {
-                    const txt = (el.textContent || '').toLowerCase();
-                    if (txt.includes('cota') && (txt.includes('painel') || txt.includes('frete'))) {
+
+                const elements = document.querySelectorAll('div.opcoes, div.card, div.col, .nav-link, .dropdown-item, button, a, div[onclick]');
+                for (const el of elements) {
+                    if (isMatch(el.textContent)) {
                         el.click();
                         return true;
                     }
@@ -235,21 +272,24 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             }""")
 
             if not card_clicked:
-                logger.warning("[ALFA] Não encontrou card 'Painel de Cotações'")
+                logger.warning("[ALFA] Não encontrou card/menu 'Painel de Cotações'")
                 await self._save_debug_screenshot("card_nao_encontrado")
-                return False
+            else:
+                logger.info("[ALFA] Clicou no card/menu 'Painel de Cotações'")
+                await page.wait_for_timeout(1000)
+                if await self._wait_for_form(page, 3000):
+                    return True
 
-            logger.info("[ALFA] Clicou no card 'Painel de Cotações'")
-            await page.wait_for_timeout(1000)
-
-            # Clicar em "Nova Cotação" via JS
+            # Clicar em "Nova Cotação" se estiver no painel intermediário
             nova_clicked = await page.evaluate("""() => {
-                const a = document.querySelector('a[href*="/cotacao/api"]');
-                if (a) { a.click(); return true; }
-                const links = document.querySelectorAll('a');
+                const isMatchNova = (txt) => {
+                    const t = (txt || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                    return (t.includes('nova') && t.includes('cota')) || t.includes('solicitar') || t.includes('fazer cota') || t.includes('criar cota') || t.includes('+ cota');
+                };
+
+                const links = document.querySelectorAll('a[href*="/cotacao/api"], a[href*="novo"], a[href*="nova"], a, button');
                 for (const el of links) {
-                    const txt = (el.textContent || '').toLowerCase();
-                    if (txt.includes('nova') && txt.includes('cota')) {
+                    if (isMatchNova(el.textContent) || (el.getAttribute('href') || '').includes('/cotacao/api')) {
                         el.click();
                         return true;
                     }
@@ -257,21 +297,15 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
                 return false;
             }""")
 
-            if not nova_clicked:
-                logger.warning("[ALFA] Não encontrou botão 'Nova Cotação'")
-                await self._save_debug_screenshot("nova_cotacao_nao_encontrado")
-                return False
+            if nova_clicked:
+                logger.info("[ALFA] Clicou em 'Nova Cotação'")
 
-            logger.info("[ALFA] Clicou em 'Nova Cotação'")
-
-            # Espera formulário renderizar
-            try:
-                await page.wait_for_selector("#tipoPagador", timeout=10000)
+            if await self._wait_for_form(page, 10000):
                 return True
-            except Exception:
-                logger.warning("[ALFA] Formulário não renderizou após navegação por menu")
-                await self._save_debug_screenshot("formulario_nao_renderizou")
-                return False
+
+            logger.warning("[ALFA] Formulário não renderizou após navegação por menu")
+            await self._save_debug_screenshot("formulario_nao_renderizou")
+            return False
         except Exception as e:
             logger.warning("[ALFA] _navegar_para_cotacao falhou com exceção: %s", e)
             return False
@@ -441,36 +475,50 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
                 raise RuntimeError("Não conseguiu navegar para cotação")
 
         # Espera o formulário renderizar
-        await page.wait_for_selector("#tipoPagador", timeout=10000)
+        if not await self._wait_for_form(page, 10000):
+            raise RuntimeError("Formulário de cotação não carregou")
 
-        await page.select_option("#tipoPagador", tipo_pagador)
+        try:
+            await page.select_option("#tipoPagador", tipo_pagador)
+        except Exception:
+            pass
         await page.wait_for_timeout(400)
 
         # Preenche todos os campos via JS de uma vez (mais rápido que fills individuais)
         await page.evaluate(
             """(data) => {
-                function setVal(sel, val) {
-                    const el = document.querySelector(sel);
-                    if (!el) return;
-                    el.value = val;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                function setVal(selectors, val) {
+                    const list = Array.isArray(selectors) ? selectors : [selectors];
+                    for (const sel of list) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        el.value = val;
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                        break;
+                    }
                 }
-                function setSelect(sel, val) {
-                    const el = document.querySelector(sel);
-                    if (!el) return;
-                    el.value = val;
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                function setSelect(selectors, val) {
+                    const list = Array.isArray(selectors) ? selectors : [selectors];
+                    for (const sel of list) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        el.value = val;
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                        break;
+                    }
                 }
-                setVal('#pesoMercadoria', data.peso);
-                setVal('#valorMercadoria', data.valor);
-                setVal('#dataInicialColeta', data.data);
-                setVal('#totalVolumes', data.volumes);
-                setVal('#totalCubagem', data.cubagem);
-                setSelect('#tipoCarga', '0');
-                setSelect('#tipoZona', '0');
+                setSelect(['#tipoPagador', 'select[name="tipoPagador"]', 'select[name*="pagador"]'], data.tipoPagador);
+                setVal(['#pesoMercadoria', 'input[name="pesoMercadoria"]', 'input[name*="peso"]'], data.peso);
+                setVal(['#valorMercadoria', 'input[name="valorMercadoria"]', 'input[name*="valor"]'], data.valor);
+                setVal(['#dataInicialColeta', 'input[name="dataInicialColeta"]', 'input[name*="data"]'], data.data);
+                setVal(['#totalVolumes', 'input[name="totalVolumes"]', 'input[name*="volume"]'], data.volumes);
+                setVal(['#totalCubagem', 'input[name="totalCubagem"]', 'input[name*="cubagem"]'], data.cubagem);
+                setSelect(['#tipoCarga', 'select[name="tipoCarga"]'], '0');
+                setSelect(['#tipoZona', 'select[name="tipoZona"]'], '0');
             }""",
             {
+                "tipoPagador": tipo_pagador,
                 "peso": self._fmt_decimal(peso, 3, comma=True),
                 "valor": self._fmt_decimal(valor, 2, comma=True),
                 "data": self._today_str(),
@@ -479,22 +527,26 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             },
         )
 
-        # Preenche CNPJs e CEPs por último para não ser sobrescrito pelo Angular
+        # Preenche CNPJs e CEPs por último para não ser sobrescrito pelo framework da página
         await page.wait_for_timeout(300)
         await page.evaluate(
             """(data) => {
-                function setVal(sel, val) {
-                    const el = document.querySelector(sel);
-                    if (!el) return;
-                    el.value = val;
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    el.dispatchEvent(new Event('blur', {bubbles: true}));
+                function setVal(selectors, val) {
+                    const list = Array.isArray(selectors) ? selectors : [selectors];
+                    for (const sel of list) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        el.value = val;
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                        el.dispatchEvent(new Event('blur', {bubbles: true}));
+                        break;
+                    }
                 }
-                setVal('#cnpjRemetente', data.cnpjRem);
-                setVal('#cepRemetente', data.cepRem);
-                setVal('#cnpjDestinatario', data.cnpjDest);
-                setVal('#cepDestinatario', data.cepDest);
+                setVal(['#cnpjRemetente', 'input[name="cnpjRemetente"]', 'input[name*="cnpjRem"]'], data.cnpjRem);
+                setVal(['#cepRemetente', 'input[name="cepRemetente"]', 'input[name*="cepRem"]'], data.cepRem);
+                setVal(['#cnpjDestinatario', 'input[name="cnpjDestinatario"]', 'input[name*="cnpjDest"]'], data.cnpjDest);
+                setVal(['#cepDestinatario', 'input[name="cepDestinatario"]', 'input[name*="cepDest"]'], data.cepDest);
             }""",
             {
                 "cnpjRem": self._format_doc(cnpj_remetente),
@@ -507,10 +559,34 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
     async def _do_submit_click(self, submit_btn) -> None:
         """Clica no botão submit com fallbacks."""
         try:
-            await submit_btn.click(timeout=8000)
+            if submit_btn and await submit_btn.is_visible(timeout=1500):
+                await submit_btn.click(timeout=6000)
+                return
         except Exception:
-            logger.warning("[ALFA] Click normal falhou, tentando via JS...")
-            await self._page.evaluate("document.querySelector(\"button[type='submit']\")?.click()")
+            pass
+        logger.info("[ALFA] Tentando submit via seletores DOM alternativos...")
+        clicked = await self._page.evaluate("""() => {
+            const selectors = [
+                "button[type='submit']", "input[type='submit']",
+                "button.btn-alfa", "button.btn-primary",
+                "#btnCalcular", "#btn-cotar"
+            ];
+            for (const s of selectors) {
+                const el = document.querySelector(s);
+                if (el) { el.click(); return true; }
+            }
+            const buttons = document.querySelectorAll('button');
+            for (const b of buttons) {
+                const t = (b.textContent || '').toLowerCase();
+                if (t.includes('calcular') || t.includes('cotar') || t.includes('enviar') || t.includes('continuar')) {
+                    b.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if not clicked:
+            logger.warning("[ALFA] Não encontrou botão de submit")
 
     async def _extrair_resultado(self, api_response=None) -> Optional[Cotacao]:
         page = self._page
