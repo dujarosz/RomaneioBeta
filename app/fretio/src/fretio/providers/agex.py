@@ -307,7 +307,6 @@ class AGEXProvider(AGEXBrowserMixin, AGEXDiagnosticsMixin, ProviderBase):
                 await self._page.goto(
                     self.LOGIN_URL, wait_until="domcontentloaded", timeout=60000
                 )
-                await self._page.wait_for_timeout(1000)
                 await self._fechar_popups()
 
                 if "login" not in (self._page.url or "").lower():

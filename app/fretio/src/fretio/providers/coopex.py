@@ -80,6 +80,8 @@ class CoopexProvider(ProviderBase):
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         )
+        from fretio.providers.provider_utils import apply_performance_route_filters
+        await apply_performance_route_filters(self._context)
         self._page = await self._context.new_page()
 
     async def _login(self):
@@ -90,18 +92,18 @@ class CoopexProvider(ProviderBase):
         try:
             logger.info(f"[{self.nome}] Fazendo login no SSW...")
             await self._page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
-            await self._page.wait_for_timeout(800)
+            await self._page.locator('input[name=f1]').wait_for(state="visible", timeout=15000)
 
             await self._page.locator('input[name=f1]').fill(self.dominio)
             await self._page.locator('input[name=f3]').fill(self.usuario)
             await self._page.locator('input[name=f4]').fill(self.senha)
             await self._page.locator('a:has-text("►")').click()
 
-            # Aguarda redirecionamento pós-login (polling até 10s)
+            # Aguarda redirecionamento pós-login (polling reativo até 10s)
             self._passo_atual = "aguardando_login"
             login_ok = False
-            for _wait in range(20):
-                await self._page.wait_for_timeout(500)
+            for _wait in range(100):
+                await self._page.wait_for_timeout(100)
                 url = self._page.url
                 if 'ssw0422' not in url or 'menu' in url:
                     login_ok = True
@@ -391,10 +393,10 @@ class CoopexProvider(ProviderBase):
         await page.evaluate('() => { if (typeof sim === "function") sim(); }')
         self._passo_atual = "aguardando_resultado"
 
-        # Polling: aguardar vlr_frete ser populado no DOM (até 25s)
+        # Polling reativo: aguardar vlr_frete ser populado no DOM (até 25s)
         results = {}
-        for _poll in range(25):
-            await page.wait_for_timeout(1000)
+        for _poll in range(160):
+            await page.wait_for_timeout(150)
             results = await page.evaluate('''() => {
                 const result = {};
                 document.querySelectorAll('input').forEach(el => {
@@ -406,7 +408,7 @@ class CoopexProvider(ProviderBase):
                    results.get('valor_frete', '') or results.get('total_geral', '') or
                    results.get('total_frete', ''))
             if vlr and vlr != '0,00':
-                logger.info(f"[{self.nome}] vlr_frete encontrado após {_poll+1}s")
+                logger.info(f"[{self.nome}] vlr_frete encontrado após {(_poll+1)*0.15:.1f}s")
                 break
             # Se XML retornou erro, não precisa continuar esperando
             if xml_responses:

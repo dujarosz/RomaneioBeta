@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.64 - 2026-08-17
+
+- DESEMPENHO GLOBAL: aplicação de flags de baixo consumo de CPU/RAM no `launch_browser_resilient` para todas as transportadoras (AGEX, Braspress, Coopex, Eucatur, Translovato, TRD, Alfa e Rodonaves).
+- FILTROS DE REDE GLOBAIS: bloqueio de rastreadores, analytics e scripts desnecessários em todos os contextos de automação via `apply_performance_route_filters`.
+- LOGIN E COTAÇÃO ACELERADOS: eliminação de esperas fixas e adoção de polling reativo (100–150ms) no login e cotação da Braspress, Coopex (SSW), Eucatur (SSW), TRD (Senior X) e AGEX.
+
 ## 2.63 - 2026-08-17
 
 - ALFA: validação completa de cotação real no novo portal `areadocliente`, preenchimento correto de data inicial, selects de carga/zona/pagador, bloqueio de widgets pesados de chat (`sz.chat`) e flags de economia de CPU/memória no Chrome.

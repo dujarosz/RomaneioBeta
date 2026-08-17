@@ -20,6 +20,8 @@ class AGEXBrowserMixin:
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
+        from fretio.providers.provider_utils import apply_performance_route_filters
+        await apply_performance_route_filters(self._context)
         self._page = await self._context.new_page()
         self._page.set_default_timeout(self.DEFAULT_TIMEOUT_MS)
         self._page.set_default_navigation_timeout(self.DEFAULT_TIMEOUT_MS)

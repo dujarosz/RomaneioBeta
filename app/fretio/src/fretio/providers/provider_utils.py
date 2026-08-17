@@ -331,3 +331,63 @@ def get_stealth_script(*, preserve_eval: bool = True) -> str:
 })();
 """
     return STEALTH_JS.replace(marker, "")
+
+
+BLOCKED_PERFORMANCE_PATTERNS = (
+    "google-analytics.com",
+    "googletagmanager.com",
+    "facebook.net",
+    "facebook.com/tr",
+    "doubleclick.net",
+    "clarity.ms",
+    "hotjar.com",
+    "sz.chat",
+    "tawk.to",
+    "zendesk.com",
+    "crisp.chat",
+    "smartlook.com",
+    "mouseflow.com",
+    "segment.io",
+    "sentry.io",
+    "datadoghq.com",
+)
+
+
+async def apply_performance_route_filters(
+    context: Any,
+    *,
+    extra_blocked: tuple[str, ...] | list[str] | None = None,
+    allow_domains: tuple[str, ...] | list[str] | None = None,
+    block_images: bool = False,
+) -> None:
+    """Aplica filtro de rotas para reduzir consumo de CPU/RAM e acelerar carregamento."""
+    if not context:
+        return
+    patterns = list(BLOCKED_PERFORMANCE_PATTERNS)
+    if extra_blocked:
+        patterns.extend(extra_blocked)
+    allowed = [d.lower() for d in (allow_domains or [])]
+
+    async def _route_handler(route):
+        try:
+            url = route.request.url.lower()
+            if any(d in url for d in ("recaptcha", "hcaptcha", "turnstile", "challenges.cloudflare")):
+                await route.continue_()
+                return
+            if allowed and any(d in url for d in allowed):
+                await route.continue_()
+                return
+            if block_images and route.request.resource_type in ("image", "media", "font"):
+                await route.abort()
+                return
+            if any(pat in url for pat in patterns):
+                await route.abort()
+                return
+            await route.continue_()
+        except Exception:
+            pass
+
+    try:
+        await context.route("**/*", _route_handler)
+    except Exception:
+        pass

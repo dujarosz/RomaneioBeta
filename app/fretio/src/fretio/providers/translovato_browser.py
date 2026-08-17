@@ -37,10 +37,15 @@ class TranslovatoBrowserMixin:
 
     async def _route_block_heavy_resources(self, route) -> None:
         try:
+            url = route.request.url.lower()
             if route.request.resource_type in self.BLOCKED_RESOURCE_TYPES:
                 await route.abort()
-            else:
-                await route.continue_()
+                return
+            from fretio.providers.provider_utils import BLOCKED_PERFORMANCE_PATTERNS
+            if any(pat in url for pat in BLOCKED_PERFORMANCE_PATTERNS):
+                await route.abort()
+                return
+            await route.continue_()
         except Exception:
             # Requisição já resolvida/cancelada (ex.: navegação abortada); ignorar.
             pass

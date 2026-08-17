@@ -38,6 +38,8 @@ class TRDBrowserMixin:
                 'Chrome/133.0.0.0 Safari/537.36'
             ),
         )
+        from fretio.providers.provider_utils import apply_performance_route_filters
+        await apply_performance_route_filters(self._context)
         self._page = await self._context.new_page()
         self._login_frame = None
         await self._page.add_init_script(self._STEALTH_JS)

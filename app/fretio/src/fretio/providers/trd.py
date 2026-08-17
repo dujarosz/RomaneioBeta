@@ -281,7 +281,7 @@ class TRDProvider(TRDBrowserMixin, TRDDiagnosticsMixin, ProviderBase):
 
                 # Aguarda SSO (Keycloak) completar a cadeia de redirecionamentos antes de buscar campos
                 try:
-                    await self._page.wait_for_load_state('networkidle', timeout=15000)
+                    await self._page.wait_for_load_state('networkidle', timeout=3000)
                 except Exception:
                     pass  # timeout aceitável; prossegue com verificação dos elementos
 

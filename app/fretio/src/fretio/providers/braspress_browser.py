@@ -21,6 +21,8 @@ class BraspressBrowserMixin:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             locale="pt-BR",
         )
+        from fretio.providers.provider_utils import apply_performance_route_filters
+        await apply_performance_route_filters(self._context)
         self._page = await self._context.new_page()
         self._page.set_default_timeout(30000)
 

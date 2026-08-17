@@ -126,19 +126,25 @@ class BraspressPlaywrightProvider(BraspressBrowserMixin, ProviderBase):
             return True
         logger.info("[Braspress] Fazendo login...")
         await self._page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-        await self._page.wait_for_timeout(1500)
+        await self._page.locator('#inputLogin').wait_for(state="visible", timeout=15000)
         await self._page.locator('#inputLogin').fill(self.cnpj)
         await self._page.locator('input[name="pass"]').fill(self.senha)
         await self._page.locator('input[type="submit"][value="Acessar"]').click()
-        await self._page.wait_for_timeout(3000)
-        body = await self._page.inner_text("body")
-        if "sair" not in body.lower():
-            self.last_error = "Login falhou"
-            logger.error("[Braspress] Login falhou")
-            return False
-        logger.info("[Braspress] Login OK")
-        self._logged_in = True
-        return True
+
+        for _ in range(50):
+            await self._page.wait_for_timeout(100)
+            try:
+                body = await self._page.inner_text("body")
+                if "sair" in body.lower():
+                    logger.info("[Braspress] Login OK")
+                    self._logged_in = True
+                    return True
+            except Exception:
+                pass
+
+        self.last_error = "Login falhou"
+        logger.error("[Braspress] Login falhou")
+        return False
 
     async def _coteir_legacy(
         self,
