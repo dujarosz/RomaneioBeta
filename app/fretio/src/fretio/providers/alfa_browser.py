@@ -226,8 +226,22 @@ class AlfaBrowserMixin:
             f"--user-data-dir={user_data}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-dev-shm-usage",
+            "--renderer-process-limit=2",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-client-side-phishing-detection",
+            "--disable-default-apps",
+            "--disable-hang-monitor",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--mute-audio",
             "--disable-session-crashed-bubble",
-            "--disable-features=InfiniteSessionRestore",
+            "--disable-features=InfiniteSessionRestore,Translate,OptimizationHints,MediaRouter",
             "--hide-crash-restore-bubble",
             "--window-position=-3000,-3000",
             "--window-size=900,760",
@@ -276,6 +290,22 @@ class AlfaBrowserMixin:
                 self._context = best_context or self._browser.contexts[0]
                 self._page = best_page or (self._context.pages[0] if self._context.pages else await self._context.new_page())
                 self._page.set_default_timeout(30000)
+
+                # Bloqueia widgets pesados e rastreadores (sz.chat, google-analytics, etc.) sem afetar o Turnstile/Alfa
+                async def _alfa_route_filter(route):
+                    req_url = route.request.url.lower()
+                    if "cloudflare" in req_url or "turnstile" in req_url or "alfatransportes" in req_url:
+                        await route.continue_()
+                    elif any(b in req_url for b in ["sz.chat", "google-analytics", "googletagmanager", "facebook", "doubleclick", "clarity"]):
+                        await route.abort()
+                    else:
+                        await route.continue_()
+
+                try:
+                    await self._context.route("**/*", _alfa_route_filter)
+                except Exception:
+                    pass
+
                 logger.info("[ALFA] Playwright conectado ao Chrome via CDP")
                 return
             except Exception as e:

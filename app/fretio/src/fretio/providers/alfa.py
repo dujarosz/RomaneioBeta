@@ -174,20 +174,15 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
     async def _form_is_ready(self, page: Any) -> bool:
         """Verifica se o formulário de cotação da Alfa está renderizado e pronto."""
         try:
+            url_low = (getattr(page, "url", "") or "").lower()
+            if "cotacao" not in url_low:
+                return False
             return bool(await page.evaluate("""() => {
-                const selectors = [
-                    '#tipoPagador', 'select[name*="tipoPagador"]', 'select[name*="pagador"]',
-                    '#pesoMercadoria', 'input[name*="pesoMercadoria"]', 'input[name*="peso"]',
-                    '#valorMercadoria', 'input[name*="valorMercadoria"]', 'input[name*="valor"]',
-                    '#cnpjRemetente', 'input[name*="cnpjRemetente"]'
-                ];
-                for (const s of selectors) {
+                const required = ['#tipoPagador', '#pesoMercadoria', '#valorMercadoria', '#cnpjRemetente'];
+                return required.every(s => {
                     const el = document.querySelector(s);
-                    if (el && (el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0)) {
-                        return true;
-                    }
-                }
-                return false;
+                    return el && (el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+                });
             }"""))
         except Exception:
             return False
@@ -501,10 +496,18 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             raise RuntimeError("Formulário de cotação não carregou")
 
         try:
-            await page.select_option("#tipoPagador", tipo_pagador)
+            await page.select_option("#tipoPagador", str(tipo_pagador))
         except Exception:
             pass
-        await page.wait_for_timeout(400)
+        try:
+            await page.select_option("#tipoCarga", "0")
+        except Exception:
+            pass
+        try:
+            await page.select_option("#tipoZona", "0")
+        except Exception:
+            pass
+        await page.wait_for_timeout(200)
 
         # Preenche todos os campos via JS de uma vez (mais rápido que fills individuais)
         await page.evaluate(

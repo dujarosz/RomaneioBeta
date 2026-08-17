@@ -651,10 +651,10 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
 
 
     @staticmethod
-    def _peso_str(cub: dict) -> str:
+    def _peso_str(cub: dict, peso_default: float = 0.0) -> str:
         """Peso por volume em kg (mínimo 1), arredondado para inteiro."""
         try:
-            v = float(cub.get("peso_por_volume_kg") or 0.0)
+            v = float(cub.get("peso_por_volume_kg") or cub.get("peso_volume_kg") or cub.get("peso") or peso_default or 0.0)
             if v > 0:
                 return str(max(1, round(v)))
         except Exception:
@@ -680,7 +680,11 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                 continue
             peso_por_volume_kg = None
             try:
-                peso_raw = row.get("peso_por_volume_kg", None)
+                peso_raw = row.get("peso_por_volume_kg")
+                if peso_raw is None:
+                    peso_raw = row.get("peso_volume_kg")
+                if peso_raw is None:
+                    peso_raw = row.get("peso")
                 if peso_raw is not None:
                     peso_val = float(peso_raw)
                     if peso_val > 0:
@@ -761,6 +765,7 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         cnpj_destinatario: str,
         cep_destino: str,
         cep_origem: str = "",
+        peso: float = 0.0,
     ) -> None:
         page = self._page
 
@@ -810,15 +815,15 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
             if await origin_zip.count() > 0:
                 await origin_zip.fill(self._format_cep(cep_origem))
                 await origin_zip.press("Tab")
-                for _ in range(20):
-                    await page.wait_for_timeout(500)
+                for _ in range(25):
+                    await page.wait_for_timeout(100)
                     try:
                         city_val = await page.locator("#originCity").input_value()
                         if city_val.strip():
                             break
                     except Exception:
                         break
-                await page.wait_for_timeout(500)
+                await page.wait_for_timeout(100)
 
         # ─── Destinatário ───
         try:
@@ -837,31 +842,34 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
             }}""")
 
         # ─── CEP destino ───
+        cep_dest_fmt = self._format_cep(cep_destino)
         try:
-            await page.locator("#destinationZipCode").fill(self._format_cep(cep_destino))
-            await page.locator("#destinationZipCode").press("Tab")
+            dest_loc = page.locator("#destinationZipCode")
+            await dest_loc.click()
+            await dest_loc.fill(cep_dest_fmt)
         except Exception:
-            logger.warning(f"[{self.nome}] fill #destinationZipCode falhou, usando JS")
-            await page.evaluate(f"""() => {{
-                const el = document.getElementById('destinationZipCode');
-                if (!el) return;
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                if (setter) setter.call(el, '{self._format_cep(cep_destino)}');
-                else el.value = '{self._format_cep(cep_destino)}';
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                el.dispatchEvent(new Event('blur', {{bubbles: true}}));
-            }}""")
+            pass
+        await page.evaluate(f"""() => {{
+            const el = document.getElementById('destinationZipCode');
+            if (!el) return;
+            el.value = '{cep_dest_fmt}';
+            if (window.jQuery) {{
+                window.jQuery(el).val('{cep_dest_fmt}').trigger('input').trigger('change').trigger('blur');
+            }}
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            el.dispatchEvent(new Event('blur', {{bubbles: true}}));
+        }}""")
         # Aguarda auto-preenchimento de cidade/estado/bairro via API do CEP
-        for _ in range(20):
-            await page.wait_for_timeout(500)
+        for _ in range(25):
+            await page.wait_for_timeout(100)
             try:
                 city_val = await page.locator("#destinationCity").input_value()
                 if city_val.strip():
                     break
             except Exception:
                 break
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(100)
 
         # Preencher Bairro se ficou vazio (campo obrigatório: DestinationAddress.District)
         district_loc = page.locator("#destinationDistrict")
@@ -938,12 +946,13 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         # ─── Primeira linha de volume (IDs fixos: amountPacks1, height1, ...) ───
         # Usa _fill_field com fallback JS: overlays (cookie banner, navbar fixa)
         # podem interceptar cliques do Playwright, causando timeout no fill().
+        peso_fallback = (float(peso) / max(1, sum(int(c.get("quantidade", 1)) for c in cubagens))) if peso > 0 else 1.0
         primeiro = cubagens[0]
         await self._fill_field(page, "amountPacks1", str(primeiro["quantidade"]))
         await self._fill_field(page, "height1", str(primeiro["altura_cm"]))
         await self._fill_field(page, "width1", str(primeiro["largura_cm"]))
         await self._fill_field(page, "length1", str(primeiro["comprimento_cm"]))
-        await self._fill_field(page, "weight1", self._peso_str(primeiro))
+        await self._fill_field(page, "weight1", self._peso_str(primeiro, peso_fallback))
 
         # ─── Linhas adicionais de volume ───
         for idx, linha in enumerate(cubagens[1:], start=2):
@@ -967,7 +976,7 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
             await self._fill_field(page, f"height{idx}", str(linha["altura_cm"]))
             await self._fill_field(page, f"width{idx}", str(linha["largura_cm"]))
             await self._fill_field(page, f"length{idx}", str(linha["comprimento_cm"]))
-            await self._fill_field(page, f"weight{idx}", self._peso_str(linha))
+            await self._fill_field(page, f"weight{idx}", self._peso_str(linha, peso_fallback))
 
         # Reforça número destino (autocomplete pode sobrescrever)
         try:
@@ -1484,6 +1493,7 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                 cnpj_destinatario=cnpj_dest,
                 cep_destino=cep_dest,
                 cep_origem=cep_orig,
+                peso=peso,
             )
             self._finish_stage("preenchendo_formulario", stage_start, details=f"linhas_cubagem={len(cubagens_cm)}")
             self._passo_atual = "submetendo_cotacao"

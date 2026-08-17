@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.63 - 2026-08-17
+
+- ALFA: validação completa de cotação real no novo portal `areadocliente`, preenchimento correto de data inicial, selects de carga/zona/pagador, bloqueio de widgets pesados de chat (`sz.chat`) e flags de economia de CPU/memória no Chrome.
+- RODONAVES: preservação do preenchimento de CEP de destino com máscara jQuery, fallback automático para peso unitário por volume e redução de latências de espera fixa na automação.
+- DESEMPENHO (PCs fracos): inclusão de flags de otimização de baixo consumo no Chrome (`--disable-gpu`, `--disable-software-rasterizer`, `--renderer-process-limit=2`, `--metrics-recording-only`, `--disable-background-networking`) e bloqueio de rastreadores e recursos pesados desnecessários para cotação.
+
 ## 2.62 - 2026-08-17
 
 - ALFA: submissão automática do formulário de login assim que o Turnstile é resolvido, ampliação do tempo de renderização da cotação e suporte para a nova estrutura de sidebar/rotas da Alfa.
