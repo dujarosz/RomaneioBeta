@@ -1016,3 +1016,141 @@ def test_rodonaves_ajax_login_failure_raises_and_marks_status():
 
     asyncio.run(run_test())
 
+
+def test_rodonaves_extrair_de_json_handles_strings_and_prioritizes_freight():
+    # Testa parsing de strings monetárias e prioridade de frete sobre nota fiscal
+    data = {
+        "EletronicInvoiceValue": 2500.0,
+        "TotalFreight": "R$ 185,50",
+        "Prazo": "4 dias úteis",
+    }
+    valor, prazo = RodonavesProvider._extrair_de_json(data)
+    assert valor == 185.50
+    assert prazo == 4
+
+    # Testa dados de endereço (não deve extrair frete)
+    address_data = {"ZipCode": "95000-000", "City": "Caxias do Sul", "State": "RS"}
+    valor_addr, prazo_addr = RodonavesProvider._extrair_de_json(address_data)
+    assert valor_addr is None
+    assert prazo_addr == 0
+
+
+def test_rodonaves_submeter_ignores_auxiliary_cep_lookup_and_clicks_calcular():
+    provider = RodonavesProvider("dom", "user", "senha", "12345678000190")
+
+    class ResponseZip:
+        url = "https://cliente.rte.com.br/Quotation/GetAddressByZipCode"
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def json(self):
+            return {"City": "Caxias do Sul", "State": "RS"}
+
+    class ResponseCalc:
+        url = "https://cliente.rte.com.br/Quotation/Calculate"
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def json(self):
+            return {"TotalFreight": 142.30, "Prazo": 3}
+
+    class FakeLocator:
+        def __init__(self, role=None):
+            self.role = role
+            self.clicks = 0
+
+        @property
+        def first(self):
+            return self
+
+        async def scroll_into_view_if_needed(self, **_kwargs):
+            return None
+
+        async def click(self, **_kwargs):
+            self.clicks += 1
+            return None
+
+        async def wait_for(self, **_kwargs):
+            return None
+
+        async def count(self):
+            return 1
+
+        async def bounding_box(self):
+            return {"x": 10, "y": 10, "width": 20, "height": 20}
+
+    class FakeFrameLocator:
+        def __init__(self):
+            self.checkbox = FakeLocator(role="checkbox")
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self.checkbox
+
+    class FakePage:
+        def __init__(self):
+            self.handlers = {}
+            self.calculate_locator = FakeLocator(role="calculate")
+            self.captcha_locator = FakeLocator(role="captcha-frame")
+            self.frame = FakeFrameLocator()
+            self.wait_calls = 0
+
+        def on(self, event, handler):
+            self.handlers[event] = handler
+
+        def remove_listener(self, event, handler):
+            self.handlers.pop(event, None)
+
+        def locator(self, selector):
+            if selector == "#calculateQuotationBtn":
+                return self.calculate_locator
+            if selector == "iframe[title*='reCAPTCHA'], iframe[src*='recaptcha']":
+                return self.captcha_locator
+            return FakeLocator(role=selector)
+
+        def frame_locator(self, _selector):
+            return self.frame
+
+        async def wait_for_timeout(self, _ms):
+            self.wait_calls += 1
+            # Simula que o CEP lookup chegou durante a espera do captcha
+            if self.wait_calls == 1:
+                self.handlers["response"](ResponseZip())
+                await asyncio.sleep(0)
+            # Simula que a resposta de cálculo chegou depois que o botão foi clicado
+            elif self.wait_calls == 4:
+                self.handlers["response"](ResponseCalc())
+                await asyncio.sleep(0)
+            return None
+
+        async def evaluate(self, script, *args):
+            if "g-recaptcha-response" in script:
+                return "token123"
+            if "td.col-result" in script or "quotationResult" in script:
+                return False
+            if "fields" in script:
+                return {"captcha_token_len": 8}
+            if "texts" in script:
+                return []
+            return None
+
+        async def inner_text(self, _selector):
+            return ""
+
+    page = FakePage()
+    provider._page = page
+    provider._browser = object()
+    provider._context = object()
+    provider._capture_safe_diagnostic_snapshot = lambda **_kwargs: asyncio.sleep(0, result={})
+    provider._simular_interacao_humana = lambda _page: asyncio.sleep(0)
+    provider._mostrar_janela = lambda: asyncio.sleep(0, result=True)
+    provider._ocultar_janela = lambda: asyncio.sleep(0)
+
+    result = asyncio.run(provider._submeter_e_extrair())
+
+    assert result is not None
+    assert result.valor_frete == 142.30
+    assert result.prazo_dias == 3
+    # Confirma que o botão Calcular FOI clicado (não foi pulado por causa do CEP lookup)
+    assert page.calculate_locator.clicks >= 1
+
+

@@ -605,41 +605,109 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         valor_frete = None
         prazo_dias = 0
 
+        if not data:
+            return None, 0
+
         if isinstance(data, dict):
-            html_data = data.get("Data") or data.get("data") or ""
-            if isinstance(html_data, str) and len(html_data) > 20:
-                for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", html_data):
-                    trecho = html_data[max(0, m.start() - 200): m.end() + 200].lower()
-                    if any(kw in trecho for kw in (
-                        "frete", "cotacao", "total geral",
-                        "valor total", "prazo", "freight", "total",
-                    )):
-                        valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
-                        break
-                if valor_frete is not None:
-                    m_prazo = re.search(r"(\d+)\s*(?:dias?|day)", html_data, re.IGNORECASE)
-                    if m_prazo:
-                        prazo_dias = int(m_prazo.group(1))
-                    return valor_frete, prazo_dias
+            for html_key in ("Data", "data", "Result", "result", "Html", "html", "Content", "content", "View", "view"):
+                html_data = data.get(html_key)
+                if isinstance(html_data, str) and len(html_data) > 20:
+                    for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", html_data):
+                        trecho = html_data[max(0, m.start() - 200): m.end() + 200].lower()
+                        if any(nf in trecho for nf in ("nota fiscal", "nf-e", "declarado", "produtos", "mercadoria")):
+                            continue
+                        if any(kw in trecho for kw in (
+                            "frete", "cotacao", "total geral",
+                            "valor total", "total do frete", "total frete", "prazo", "freight", "total",
+                        )):
+                            valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
+                            break
+                    if valor_frete is not None:
+                        m_prazo = re.search(r"(\d+)\s*(?:dias?|day|dia\(s\)|dias úteis)", html_data, re.IGNORECASE)
+                        if m_prazo:
+                            prazo_dias = int(m_prazo.group(1))
+                        return valor_frete, prazo_dias
+
+        def _parse_val(val: Any) -> float | None:
+            if isinstance(val, (int, float)) and val > 0:
+                return round(float(val), 2)
+            if isinstance(val, str):
+                s = val.strip()
+                m_br = re.search(r"(?:R\$\s*)?([\d.]+,\d{2})", s)
+                if m_br:
+                    try:
+                        return round(float(m_br.group(1).replace(".", "").replace(",", ".")), 2)
+                    except Exception:
+                        pass
+                m_en = re.search(r"(?:R\$\s*)?(\d+\.\d{2})", s)
+                if m_en:
+                    try:
+                        return round(float(m_en.group(1)), 2)
+                    except Exception:
+                        pass
+            return None
+
+        def _parse_prazo(val: Any) -> int:
+            if isinstance(val, (int, float)) and val > 0:
+                return int(val)
+            if isinstance(val, str):
+                m = re.search(r"(\d+)", val)
+                if m:
+                    try:
+                        return int(m.group(1))
+                    except Exception:
+                        pass
+            return 0
+
+        ignored_keys = (
+            "invoice", "nota", "declarado", "mercadoria", "produto",
+            "cep", "taxid", "cnpj", "document", "peso", "weight",
+            "height", "width", "length", "pack", "volume", "cubagem",
+            "quantidade", "discount", "desconto", "aliquota", "icms",
+        )
+
+        freight_keys = (
+            "totalfreight", "freighttotal", "vlrfrete", "valorfrete",
+            "totalfrete", "vlrtotalfrete", "valortotalfrete", "frete",
+            "freight", "freightvalue", "valuefreight", "freightprice",
+        )
+
+        total_keys = (
+            "vlrtotal", "valortotal", "totalgeral", "totalvalue",
+            "total", "price", "valor", "value",
+        )
+
+        prazo_keys = (
+            "prazo", "deadline", "days", "dias", "deliverytime",
+            "transittime", "leadtime", "prazodias", "prazodeentrega",
+        )
 
         def _buscar(obj):
             nonlocal valor_frete, prazo_dias
             if isinstance(obj, dict):
                 for key, val in obj.items():
                     kl = key.lower()
-                    if valor_frete is None and isinstance(val, (int, float)) and val > 0:
-                        if any(kw in kl for kw in (
-                            "frete", "freight", "freighttotal", "totalfreight",
-                            "valor", "value", "total", "price", "vlrfrete",
-                            "valorfrete", "totalfrete", "vlrtotal",
-                        )):
-                            valor_frete = round(float(val), 2)
-                    if prazo_dias == 0 and isinstance(val, (int, float)) and val > 0:
-                        if any(kw in kl for kw in (
-                            "prazo", "deadline", "days", "dias",
-                            "deliverytime", "transittime", "leadtime",
-                        )):
-                            prazo_dias = int(val)
+                    if any(ign in kl for ign in ignored_keys):
+                        continue
+                    if valor_frete is None and any(kw in kl for kw in freight_keys):
+                        parsed = _parse_val(val)
+                        if parsed is not None and parsed > 0:
+                            valor_frete = parsed
+                    if prazo_dias == 0 and any(kw in kl for kw in prazo_keys):
+                        prazo_dias = _parse_prazo(val)
+
+                if valor_frete is None:
+                    for key, val in obj.items():
+                        kl = key.lower()
+                        if any(ign in kl for ign in ignored_keys):
+                            continue
+                        if any(kw in kl for kw in total_keys):
+                            parsed = _parse_val(val)
+                            if parsed is not None and parsed > 0:
+                                valor_frete = parsed
+                                break
+
+                for val in obj.values():
                     if isinstance(val, (dict, list)):
                         _buscar(val)
             elif isinstance(obj, list):
@@ -1019,42 +1087,61 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
         api_result: dict[str, Any] = {}
         submit_started = False
 
-        def _is_quotation_api_url(url: str | None) -> bool:
+        def _is_quotation_calc_url(url: str | None) -> bool:
             lowered = str(url or "").lower()
-            return "quotation" in lowered or "calculate" in lowered or "cotacao" in lowered
+            if not lowered:
+                return False
+            if any(ign in lowered for ign in (
+                "getaddress", "getcustomer", "searchcep", "getcit", "getstate",
+                "checksession", "customeraccount", "login", "adopt", "cookie",
+                "recaptcha", "google.com", "gstatic.com", ".js", ".css", ".png",
+                ".jpg", ".ico", ".woff", ".svg"
+            )):
+                return False
+            return any(kw in lowered for kw in (
+                "/calculate", "/simulate", "/simular", "/cotacao", "/cotar",
+                "/calcular", "/getquotation", "/quotation/calculate",
+                "/quotation/simulate", "/quotation/cotacao"
+            ))
 
         async def _capture_quotation_request(request):
             nonlocal submit_started
             try:
-                if _is_quotation_api_url(getattr(request, "url", "")):
+                if _is_quotation_calc_url(getattr(request, "url", "")):
                     submit_started = True
+                    logger.info(f"[{self.nome}] Requisição de cálculo detectada: {request.url}")
             except Exception:
                 pass
 
         async def _capture_quotation_response(response):
             nonlocal submit_started
             try:
-                url = response.url.lower()
                 if response.status != 200:
                     return
-                if _is_quotation_api_url(url):
-                    submit_started = True
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct:
-                        try:
-                            data = await response.json()
+                url = response.url
+                is_calc = _is_quotation_calc_url(url)
+                ct = response.headers.get("content-type", "").lower()
+                if "json" in ct:
+                    try:
+                        data = await response.json()
+                        val, _ = self._extrair_de_json(data)
+                        if val is not None or is_calc:
                             api_result["json"] = data
                             api_result["url"] = response.url
-                        except Exception:
-                            pass
-                    elif "text" in ct or "html" in ct:
-                        try:
-                            body = await response.text()
-                            if any(kw in body.lower() for kw in ("frete", "valor", "prazo", "freight", "price")):
-                                api_result["text"] = body
-                                api_result["url"] = response.url
-                        except Exception:
-                            pass
+                            submit_started = True
+                            logger.info(f"[{self.nome}] Resposta JSON de cotação capturada ({url})")
+                    except Exception:
+                        pass
+                elif ("text" in ct or "html" in ct) and is_calc:
+                    try:
+                        body = await response.text()
+                        if any(kw in body.lower() for kw in ("frete", "valor", "prazo", "freight", "price", "col-result", "quotationresult")):
+                            api_result["text"] = body
+                            api_result["url"] = response.url
+                            submit_started = True
+                            logger.info(f"[{self.nome}] Resposta HTML de cotação capturada ({url})")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1127,15 +1214,21 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                         return ""
 
                 async def _resultado_ou_submit_ja_apareceu() -> bool:
-                    if submit_started:
-                        return True
-                    if api_result:
+                    if api_result and "json" in api_result:
+                        v, _ = self._extrair_de_json(api_result["json"])
+                        if v is not None:
+                            return True
+                    if api_result and "text" in api_result:
                         return True
                     try:
                         detected = await page.evaluate("""() => {
-                            if (document.querySelectorAll('td.col-result').length > 0) return true;
-                            const qr = document.getElementById('quotationResult');
-                            return !!(qr && qr.innerHTML.trim().length > 50);
+                            if (document.querySelectorAll('td.col-result, .col-result').length > 0) return true;
+                            const qr = document.getElementById('quotationResult') || document.querySelector('[id*="quotationResult" i], [id*="Result" i]');
+                            if (qr && qr.innerText && qr.innerText.trim().length > 30) {
+                                const t = qr.innerText.toLowerCase();
+                                if (t.includes('r$') || t.includes('frete') || t.includes('prazo') || t.includes('total')) return true;
+                            }
+                            return false;
                         }""")
                         return bool(detected)
                     except Exception:
@@ -1224,6 +1317,7 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                             raise RuntimeError(f"Falha ao acionar Calcular via JS: {js_click_err}") from js_click_err
                         if not click_succeeded:
                             raise RuntimeError("Falha ao acionar Calcular via JS: botão Calcular não encontrado")
+
             self._passo_atual = "aguardando_resultado_api"
             if manual_submit_detected:
                 logger.info(f"[{self.nome}] Resultado em andamento após interação manual, aguardando retorno...")
@@ -1231,14 +1325,22 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                 logger.info(f"[{self.nome}] Botao Calcular clicado, aguardando resultado...")
 
             for _poll in range(120):
-                if api_result:
-                    logger.info(f"[{self.nome}] Resultado capturado via API ({api_result.get('url', '?')})")
+                if "json" in api_result:
+                    v, _ = self._extrair_de_json(api_result["json"])
+                    if v is not None:
+                        logger.info(f"[{self.nome}] Resultado capturado via JSON API ({api_result.get('url', '?')})")
+                        break
+                if "text" in api_result:
+                    logger.info(f"[{self.nome}] Resultado capturado via texto API ({api_result.get('url', '?')})")
                     break
                 try:
                     has_result = await page.evaluate("""() => {
-                        if (document.querySelectorAll('td.col-result').length > 0) return 'col-result';
-                        const qr = document.getElementById('quotationResult');
-                        if (qr && qr.innerHTML.trim().length > 50) return 'quotationResult';
+                        if (document.querySelectorAll('td.col-result, .col-result').length > 0) return 'col-result';
+                        const qr = document.getElementById('quotationResult') || document.querySelector('[id*="quotationResult" i], [id*="Result" i]');
+                        if (qr && qr.innerText && qr.innerText.trim().length > 30) {
+                            const t = qr.innerText.toLowerCase();
+                            if (t.includes('r$') || t.includes('frete') || t.includes('prazo') || t.includes('total')) return 'quotationResult';
+                        }
                         return '';
                     }""")
                     if has_result:
@@ -1273,43 +1375,56 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
                 try:
                     result_data = await page.evaluate("""() => {
                         const texts = [];
-                        const cells = document.querySelectorAll('td.col-result');
+                        const cells = document.querySelectorAll('td.col-result, .col-result, [class*="col-result"]');
                         for (const cell of cells) {
-                            texts.push(cell.innerText.trim());
+                            if (cell.innerText && cell.innerText.trim()) texts.push(cell.innerText.trim());
                         }
-                        if (texts.length === 0) {
-                            const qr = document.getElementById('quotationResult');
-                            if (qr && qr.innerText.trim()) {
-                                texts.push(qr.innerText.trim());
+                        const qr = document.getElementById('quotationResult') || document.querySelector('[id*="quotationResult" i], [id*="Result" i]');
+                        if (qr && qr.innerText && qr.innerText.trim()) {
+                            texts.push(qr.innerText.trim());
+                        }
+                        const tables = document.querySelectorAll('table');
+                        for (const tbl of tables) {
+                            const txt = tbl.innerText || '';
+                            if (txt.includes('R$') && (txt.toLowerCase().includes('frete') || txt.toLowerCase().includes('prazo') || txt.toLowerCase().includes('total'))) {
+                                texts.push(txt.trim());
                             }
                         }
                         return texts;
                     }""")
                     for txt in (result_data or []):
                         if valor_frete is None:
-                            m_val = re.search(r"R\$\s*([\d.]+,\d{2})", txt)
-                            if m_val:
-                                valor_frete = float(m_val.group(1).replace(".", "").replace(",", "."))
-                                continue
+                            for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", txt):
+                                sub = txt[max(0, m.start() - 100): m.end() + 100].lower()
+                                if any(nf_kw in sub for nf_kw in ("nota fiscal", "nf-e", "declarado", "produtos", "mercadoria")):
+                                    continue
+                                valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
+                                break
                         if prazo_dias == 0:
-                            m_prazo = re.search(r"(\d+)\s*dias?", txt, re.IGNORECASE)
+                            m_prazo = re.search(r"(\d+)\s*(?:dias?|day|dia\(s\)|dias úteis)", txt, re.IGNORECASE)
                             if m_prazo:
                                 prazo_dias = int(m_prazo.group(1))
                     if valor_frete is not None:
-                        logger.info(f"[{self.nome}] Extracao via td.col-result (batch): R${valor_frete:.2f}")
+                        logger.info(f"[{self.nome}] Extracao via DOM result: R${valor_frete:.2f}, {prazo_dias} dias")
                 except Exception as e:
-                    logger.debug(f"[{self.nome}] Extracao batch td.col-result falhou: {e}")
+                    logger.debug(f"[{self.nome}] Extracao DOM falhou: {e}")
 
             if valor_frete is None and "text" in api_result:
                 try:
                     api_text = api_result["text"]
                     for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", api_text):
                         trecho = api_text[max(0, m.start() - 120): m.end() + 120].lower()
-                        if any(kw in trecho for kw in ("frete", "cotacao", "total geral", "valor total", "prazo")):
+                        if any(nf_kw in trecho for nf_kw in ("nota fiscal", "nf-e", "declarado", "produtos", "mercadoria")):
+                            continue
+                        if any(kw in trecho for kw in ("frete", "cotacao", "total geral", "valor total", "total", "prazo", "freight", "price")):
                             valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
                             break
+                    if prazo_dias == 0:
+                        m_prazo = re.search(r"(\d+)\s*(?:dias?|day|dia\(s\)|dias úteis)", api_text, re.IGNORECASE)
+                        if m_prazo:
+                            prazo_dias = int(m_prazo.group(1))
                     if valor_frete is not None:
-                        logger.info(f"[{self.nome}] Extracao via texto API: R${valor_frete:.2f}")
+                        logger.info(f"[{self.nome}] Extracao via texto API: R${valor_frete:.2f}, {prazo_dias} dias")
                 except Exception as e:
                     logger.debug(f"[{self.nome}] Extracao texto API falhou: {e}")
 
@@ -1334,56 +1449,54 @@ class RodonavesProvider(RodonavesBrowserMixin, RodonavesDiagnosticsMixin, Provid
 
                     for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", body_norm):
                         trecho = body_norm[max(0, m.start() - 120): m.end() + 120].lower()
-                        if any(kw in trecho for kw in ("frete", "cotacao", "total geral", "valor total", "prazo")):
+                        if any(nf_kw in trecho for nf_kw in ("nota fiscal", "nf-e", "declarado", "produtos", "mercadoria")):
+                            continue
+                        if any(kw in trecho for kw in ("frete", "cotacao", "total geral", "valor total", "total do frete", "total frete", "prazo", "freight")):
                             valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
                             break
 
                     if prazo_dias == 0 and body_norm:
-                        m_prazo = re.search(r"(\d+)\s*dias?", body_norm, re.IGNORECASE)
+                        m_prazo = re.search(r"(\d+)\s*(?:dias?|day|dia\(s\)|dias úteis)", body_norm, re.IGNORECASE)
                         if m_prazo:
                             prazo_dias = int(m_prazo.group(1))
 
                     if valor_frete is not None:
-                        logger.info(f"[{self.nome}] Extracao via body fallback: R${valor_frete:.2f}")
+                        logger.info(f"[{self.nome}] Extracao via body fallback: R${valor_frete:.2f}, {prazo_dias} dias")
                 except Exception as e:
                     logger.debug(f"[{self.nome}] Extracao body fallback falhou: {e}")
 
-            # Estratégia 5: aguardar mais tempo se o DOM ainda pode estar carregando
-            if valor_frete is None and not page.is_closed() and not api_result:
+            if valor_frete is None and not page.is_closed():
                 logger.info(f"[{self.nome}] Portal externo lento; nenhum resultado após %.2fs. Aguardando mais 10s...", time.monotonic() - stage_started)
                 for _extra_poll in range(20):
                     await page.wait_for_timeout(500)
                     try:
-                        has_result = await page.evaluate("""() => {
-                            const cells = document.querySelectorAll('td.col-result');
-                            if (cells.length > 0) return true;
-                            const qr = document.getElementById('quotationResult');
-                            if (qr && qr.innerHTML.trim().length > 50) return true;
-                            return false;
+                        result_data = await page.evaluate("""() => {
+                            const texts = [];
+                            const cells = document.querySelectorAll('td.col-result, .col-result, [class*="col-result"]');
+                            for (const cell of cells) {
+                                if (cell.innerText && cell.innerText.trim()) texts.push(cell.innerText.trim());
+                            }
+                            const qr = document.getElementById('quotationResult') || document.querySelector('[id*="quotationResult" i], [id*="Result" i]');
+                            if (qr && qr.innerText && qr.innerText.trim()) {
+                                texts.push(qr.innerText.trim());
+                            }
+                            return texts;
                         }""")
-                        if has_result:
-                            result_data = await page.evaluate("""() => {
-                                const texts = [];
-                                const cells = document.querySelectorAll('td.col-result');
-                                for (const cell of cells) texts.push(cell.innerText.trim());
-                                if (texts.length === 0) {
-                                    const qr = document.getElementById('quotationResult');
-                                    if (qr && qr.innerText.trim()) texts.push(qr.innerText.trim());
-                                }
-                                return texts;
-                            }""")
-                            for txt in (result_data or []):
-                                if valor_frete is None:
-                                    m_val = re.search(r"R\$\s*([\d.]+,\d{2})", txt)
-                                    if m_val:
-                                        valor_frete = float(m_val.group(1).replace(".", "").replace(",", "."))
-                                if prazo_dias == 0:
-                                    m_prazo = re.search(r"(\d+)\s*dias?", txt, re.IGNORECASE)
-                                    if m_prazo:
-                                        prazo_dias = int(m_prazo.group(1))
-                            if valor_frete is not None:
-                                logger.info(f"[{self.nome}] Extracao via polling extra: R${valor_frete:.2f}")
-                                break
+                        for txt in (result_data or []):
+                            if valor_frete is None:
+                                for m in re.finditer(r"R\$\s*([\d.]+,\d{2})", txt):
+                                    sub = txt[max(0, m.start() - 100): m.end() + 100].lower()
+                                    if any(nf_kw in sub for nf_kw in ("nota fiscal", "nf-e", "declarado", "produtos", "mercadoria")):
+                                        continue
+                                    valor_frete = float(m.group(1).replace(".", "").replace(",", "."))
+                                    break
+                            if prazo_dias == 0:
+                                m_prazo = re.search(r"(\d+)\s*(?:dias?|day|dia\(s\)|dias úteis)", txt, re.IGNORECASE)
+                                if m_prazo:
+                                    prazo_dias = int(m_prazo.group(1))
+                        if valor_frete is not None:
+                            logger.info(f"[{self.nome}] Extracao via polling extra: R${valor_frete:.2f}, {prazo_dias} dias")
+                            break
                     except Exception:
                         break
 

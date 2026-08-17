@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.65 - 2026-08-17
+
+- RODONAVES: correção crítica na extração do resultado de cotação — isolamento de chamadas AJAX auxiliares de CEP/cliente para não anular o clique no botão Calcular, suporte a formatos de frete monetário em string/HTML e proteção contra captura do valor da nota fiscal.
+
 ## 2.64 - 2026-08-17
 
 - DESEMPENHO GLOBAL: aplicação de flags de baixo consumo de CPU/RAM no `launch_browser_resilient` para todas as transportadoras (AGEX, Braspress, Coopex, Eucatur, Translovato, TRD, Alfa e Rodonaves).
