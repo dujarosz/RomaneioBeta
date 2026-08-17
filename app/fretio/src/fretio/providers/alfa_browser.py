@@ -84,7 +84,7 @@ class AlfaBrowserMixin:
 
     def _score_browser_url(self, url: str | None) -> tuple[int, str]:
         lowered = str(url or "").strip().lower()
-        if self.BASE_URL.lower() in lowered:
+        if self.BASE_URL.lower() in lowered or "alfatransportes.com.br" in lowered:
             return (0, lowered)
         if lowered.startswith(("http://", "https://")):
             return (1, lowered)

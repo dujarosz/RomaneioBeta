@@ -907,7 +907,7 @@ async def _rastrear_alfa(
     chave_acesso: str,
 ) -> None:
     """Rastreio Alfa Transportes via portal público (sem login necessário)."""
-    _ALFA_TRACK_URL = "https://arearestrita.alfatransportes.com.br/rastreio/transbordo-site/"
+    _ALFA_TRACK_URL = "https://areadocliente.alfatransportes.com.br/rastreio/transbordo-site/"
     _MESES_PT = {
         "janeiro": "01", "fevereiro": "02", "março": "03", "abril": "04",
         "maio": "05", "junho": "06", "julho": "07", "agosto": "08",
@@ -996,7 +996,7 @@ async def _rastrear_alfa(
             resultado.status_texto = "ENTREGUE" + (f" — Previsão: {previsao}" if previsao else "")
             resultado.screenshot_path = await _capturar_html_fullpage(
                 resp.text,
-                "https://arearestrita.alfatransportes.com.br/",
+                "https://areadocliente.alfatransportes.com.br/",
                 numero_nfe,
             )
             logger.info(f"[RASTREIO-ALFA] NF {numero_nfe}: ENTREGUE. Screenshot: {resultado.screenshot_path}")

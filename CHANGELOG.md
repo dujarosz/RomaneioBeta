@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.61 - 2026-08-17
+
+- ALFA: migração para o novo domínio `areadocliente.alfatransportes.com.br` com compatibilidade automática para URLs antigas configuradas e atualização dos fluxos de login, cotação e rastreio.
+
 ## 2.60 - 2026-08-17
 
 - ALFA: correção do caminho de cotação com navegação resiliente a mudanças de layout/menus e detecção flexível de formulário e botões de submit.

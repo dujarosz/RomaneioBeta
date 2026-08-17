@@ -32,10 +32,10 @@ logger = get_logger(__name__)
 class AlfaProvider(AlfaBrowserMixin, ProviderBase):
     """Provider Alfa com login manual e cotacao automatizada."""
 
-    BASE_URL = "https://arearestrita.alfatransportes.com.br"
-    LOGIN_URL = "https://arearestrita.alfatransportes.com.br/login/"
-    COTACAO_URL = "https://arearestrita.alfatransportes.com.br/cotacao/"
-    COTACAO_API_URL = "https://arearestrita.alfatransportes.com.br/cotacao/api/"
+    BASE_URL = "https://areadocliente.alfatransportes.com.br"
+    LOGIN_URL = "https://areadocliente.alfatransportes.com.br/login/"
+    COTACAO_URL = "https://areadocliente.alfatransportes.com.br/cotacao/"
+    COTACAO_API_URL = "https://areadocliente.alfatransportes.com.br/cotacao/api/"
     LOGIN_MAX_WAIT_S = 120
     _digits = staticmethod(_digits)
     _fmt_decimal = staticmethod(_fmt_decimal)
@@ -54,7 +54,15 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
         self.login = str(login or "").strip()
         self.senha = str(senha or "").strip()
         self.headless = bool(headless)
-        self.login_url = str(login_url or self.LOGIN_URL).strip()
+
+        login_url = str(login_url or "").strip()
+        if "arearestrita.alfatransportes.com.br" in login_url:
+            login_url = login_url.replace("arearestrita.alfatransportes.com.br", "areadocliente.alfatransportes.com.br")
+        self.login_url = login_url or self.LOGIN_URL
+
+        cotacao_url = str(cotacao_url or "").strip()
+        if "arearestrita.alfatransportes.com.br" in cotacao_url:
+            cotacao_url = cotacao_url.replace("arearestrita.alfatransportes.com.br", "areadocliente.alfatransportes.com.br")
 
         if cotacao_url and "/api/" in str(cotacao_url):
             self.cotacao_api_url = str(cotacao_url).strip()
@@ -355,7 +363,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
 
         # Verifica se já está logado (sessão persistente do user-data-dir)
         current_url = self._get_page_url_sync()
-        if current_url and self.BASE_URL.lower() in current_url.lower() and "login" not in current_url.lower():
+        if current_url and "alfatransportes.com.br" in current_url.lower() and "login" not in current_url.lower():
             await self._connect_playwright()
             if await self._is_logged_in():
                 self._logged_in = True
@@ -388,7 +396,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
         for _ in range(30):
             await asyncio.sleep(0.5)
             url = self._get_page_url_sync()
-            if url and self.BASE_URL.lower() in url.lower() and "login" not in url.lower():
+            if url and "alfatransportes.com.br" in url.lower() and "login" not in url.lower():
                 auto_pass = True
                 break
 
@@ -401,7 +409,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             for _ in range(self.LOGIN_MAX_WAIT_S):
                 await asyncio.sleep(0.5)
                 url = self._get_page_url_sync()
-                if url and self.BASE_URL.lower() in url.lower() and "login" not in url.lower():
+                if url and "alfatransportes.com.br" in url.lower() and "login" not in url.lower():
                     break
             else:
                 self.last_error = "Login Alfa timeout (aguardando login manual)"

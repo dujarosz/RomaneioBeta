@@ -888,7 +888,7 @@ def test_alfa_navegar_para_cotacao_detects_ready_form_without_navigation():
 
     class FakeAlfaPage:
         def __init__(self):
-            self.url = "https://arearestrita.alfatransportes.com.br/cotacao/"
+            self.url = "https://areadocliente.alfatransportes.com.br/cotacao/"
             self.gotos = []
 
         async def evaluate(self, script, *args):
@@ -912,7 +912,7 @@ def test_alfa_navegar_para_cotacao_direct_url_success():
 
     class FakeAlfaPage:
         def __init__(self):
-            self.url = "https://arearestrita.alfatransportes.com.br/painel/"
+            self.url = "https://areadocliente.alfatransportes.com.br/painel/"
             self.gotos = []
             self._eval_count = 0
 
@@ -922,7 +922,6 @@ def test_alfa_navegar_para_cotacao_direct_url_success():
 
         async def evaluate(self, script, *args):
             self._eval_count += 1
-            # Retorna True a partir da chamada após o primeiro goto
             return len(self.gotos) >= 1
 
         async def wait_for_timeout(self, _ms):
@@ -942,6 +941,20 @@ def test_alfa_navegar_para_cotacao_direct_url_success():
         assert len(provider._page.gotos) >= 1
 
     asyncio.run(run_test())
+
+
+def test_alfa_legacy_url_auto_migration():
+    from fretio.providers.alfa import AlfaProvider
+
+    provider = AlfaProvider(
+        "user",
+        "senha",
+        login_url="https://arearestrita.alfatransportes.com.br/login/",
+        cotacao_url="https://arearestrita.alfatransportes.com.br/cotacao/api/",
+    )
+    assert provider.login_url == "https://areadocliente.alfatransportes.com.br/login/"
+    assert provider.cotacao_api_url == "https://areadocliente.alfatransportes.com.br/cotacao/api/"
+    assert provider.BASE_URL == "https://areadocliente.alfatransportes.com.br"
 
 
 def test_rodonaves_ajax_login_failure_raises_and_marks_status():

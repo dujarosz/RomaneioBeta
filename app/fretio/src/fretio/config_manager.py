@@ -80,8 +80,8 @@ habilitado = false
 login = ""
 senha = ""
 cnpj_remetente = ""
-login_url = "https://arearestrita.alfatransportes.com.br/login/"
-cotacao_url = "https://arearestrita.alfatransportes.com.br/cotacao/api/"
+login_url = "https://areadocliente.alfatransportes.com.br/login/"
+cotacao_url = "https://areadocliente.alfatransportes.com.br/cotacao/api/"
 headless = false
 ufs_atendidas = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO"]
 
