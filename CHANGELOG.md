@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.62 - 2026-08-17
+
+- ALFA: submissão automática do formulário de login assim que o Turnstile é resolvido, ampliação do tempo de renderização da cotação e suporte para a nova estrutura de sidebar/rotas da Alfa.
+
 ## 2.61 - 2026-08-17
 
 - ALFA: migração para o novo domínio `areadocliente.alfatransportes.com.br` com compatibilidade automática para URLs antigas configuradas e atualização dos fluxos de login, cotação e rastreio.

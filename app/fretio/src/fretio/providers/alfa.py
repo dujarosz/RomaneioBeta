@@ -201,7 +201,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
         return False
 
     async def _navegar_para_cotacao(self) -> bool:
-        """Navega para o formulário de cotação: card/menu 'Painel de Cotações' → botão 'Nova Cotação'."""
+        """Navega para o formulário de cotação: direto por URL ou via menu/sidebar."""
         page = self._page
         try:
             current = page.url.lower()
@@ -243,19 +243,21 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
                 try:
                     logger.info("[ALFA] Tentando navegação direta para %s", target_url)
                     await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
-                    await page.wait_for_timeout(800)
-                    if await self._wait_for_form(page, 4000):
+                    if await self._wait_for_form(page, 8000):
                         logger.info("[ALFA] Formulário pronto via navegação direta (%s)", target_url)
                         return True
                 except Exception as e:
                     logger.debug("[ALFA] Navegação direta para %s falhou: %s", target_url, e)
 
-            # Fallback: volta à página base e navega via menu / cards
+            # Fallback: volta à página base e navega via menu / sidebar / cards
             await page.goto(self.BASE_URL, wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(1000)
 
-            # Clicar no card / link / menu "Painel de Cotações" via JS
+            # Clicar no menu lateral (#appSidebar) ou cards
             card_clicked = await page.evaluate("""() => {
+                // Abre grupos da sidebar recolhidos
+                document.querySelectorAll('.app-nav-group, details').forEach(d => { d.open = true; });
+
                 const isMatch = (txt) => {
                     const t = (txt || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
                     return t.includes('cota') || t.includes('painel de cota') || t.includes('solicitar cota') || t.includes('frete');
@@ -269,7 +271,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
                     }
                 }
 
-                const elements = document.querySelectorAll('div.opcoes, div.card, div.col, .nav-link, .dropdown-item, button, a, div[onclick]');
+                const elements = document.querySelectorAll('a.app-nav-link, div.opcoes, div.card, div.col, .nav-link, .dropdown-item, button, a, div[onclick]');
                 for (const el of elements) {
                     if (isMatch(el.textContent)) {
                         el.click();
@@ -280,12 +282,11 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             }""")
 
             if not card_clicked:
-                logger.warning("[ALFA] Não encontrou card/menu 'Painel de Cotações'")
+                logger.warning("[ALFA] Não encontrou link/menu de cotação")
                 await self._save_debug_screenshot("card_nao_encontrado")
             else:
-                logger.info("[ALFA] Clicou no card/menu 'Painel de Cotações'")
-                await page.wait_for_timeout(1000)
-                if await self._wait_for_form(page, 3000):
+                logger.info("[ALFA] Clicou no link/menu de cotação")
+                if await self._wait_for_form(page, 5000):
                     return True
 
             # Clicar em "Nova Cotação" se estiver no painel intermediário
@@ -379,22 +380,33 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             "(function(){"
             f"var u=document.querySelector('#username');"
             f"var p=document.querySelector('#password');"
-            f"if(u){{u.value={json.dumps(self.login)};u.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
-            f"if(p){{p.value={json.dumps(self.senha)};p.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
+            f"if(u){{u.value={json.dumps(self.login)};u.dispatchEvent(new Event('input',{{bubbles:true}}));u.dispatchEvent(new Event('change',{{bubbles:true}}));}}"
+            f"if(p){{p.value={json.dumps(self.senha)};p.dispatchEvent(new Event('input',{{bubbles:true}}));u.dispatchEvent(new Event('change',{{bubbles:true}}));}}"
             "})();"
         )
         await self._cdp_eval_raw(fill_js)
         logger.info("[ALFA] Credenciais preenchidas via CDP direto (sem Playwright)")
 
-        # Tenta clicar submit (Turnstile pode auto-resolver para browsers conhecidos)
-        click_js = "(function(){var b=document.querySelector('#btn-enviar');if(b){b.click();}})();"
-        await self._cdp_eval_raw(click_js)
+        # Script para submeter quando o botão estiver habilitado pelo Turnstile
+        try_submit_js = """(function(){
+            var b = document.querySelector('#btn-enviar');
+            if (b && !b.disabled) {
+                b.click();
+                return true;
+            }
+            return false;
+        })();"""
+
+        # Tenta submeter imediatamente
+        await self._cdp_eval_raw(try_submit_js)
 
         # Aguarda até 15s por auto-pass do Turnstile (janela fica oculta)
         logger.info("[ALFA] Tentando auto-login (sem janela)...")
         auto_pass = False
         for _ in range(30):
             await asyncio.sleep(0.5)
+            # Tenta clicar caso o Turnstile tenha acabado de validar
+            await self._cdp_eval_raw(try_submit_js)
             url = self._get_page_url_sync()
             if url and "alfatransportes.com.br" in url.lower() and "login" not in url.lower():
                 auto_pass = True
@@ -408,6 +420,8 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
 
             for _ in range(self.LOGIN_MAX_WAIT_S):
                 await asyncio.sleep(0.5)
+                # Se o Turnstile resolver enquanto a janela estiver aberta, tenta clicar
+                await self._cdp_eval_raw(try_submit_js)
                 url = self._get_page_url_sync()
                 if url and "alfatransportes.com.br" in url.lower() and "login" not in url.lower():
                     break
@@ -417,7 +431,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
                 return False
 
         # Login OK — espera a página estabilizar antes de conectar Playwright
-        logger.info("[ALFA] Login detectado! Aguardando p\u00e1gina estabilizar...")
+        logger.info("[ALFA] Login detectado! Aguardando página estabilizar...")
         await asyncio.sleep(1)
 
         # Conecta Playwright (Turnstile já passou)
@@ -427,16 +441,16 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
         self._set_taskbar_visible(False)
 
         # Verifica se o formulário de cotação renderizou (com retry)
-        for attempt in range(2):
+        for attempt in range(3):
             if await self._is_logged_in():
                 self._logged_in = True
                 logger.info("[ALFA] Login OK — Playwright conectado após Turnstile")
                 return True
-            logger.info(f"[ALFA] Formul\u00e1rio n\u00e3o renderizou (tentativa {attempt+1}/2), aguardando...")
-            await asyncio.sleep(1)
+            logger.info(f"[ALFA] Formulário não renderizou (tentativa {attempt+1}/3), aguardando...")
+            await asyncio.sleep(1.5)
 
         self._logged_in = False
-        self.last_error = "Login realizado mas formulário não renderizou após 2 tentativas"
+        self.last_error = "Login realizado mas formulário não renderizou após 3 tentativas"
         logger.error(f"[ALFA] {self.last_error}")
         return False
 
@@ -713,7 +727,7 @@ class AlfaProvider(AlfaBrowserMixin, ProviderBase):
             api_response = None
             try:
                 async with self._page.expect_response(
-                    lambda r: self.cotacao_api_url in r.url and r.request.method.upper() in {"POST", "GET"},
+                    lambda r: (self.cotacao_api_url in r.url or "cotacao" in r.url.lower() or "calcul" in r.url.lower()) and r.request.method.upper() in {"POST", "GET"},
                     timeout=15000,
                 ) as response_info:
                     await self._do_submit_click(submit_btn)
